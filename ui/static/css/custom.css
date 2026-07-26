@@ -1,0 +1,38 @@
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse-ring {
+  0%   { transform: scale(0.8); opacity: 1; }
+  100% { transform: scale(1.4); opacity: 0; }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.35s ease-out both;
+}
+
+.htmx-settling .animate-fade-in {
+  animation: fade-in 0.35s ease-out both;
+}
+
+.status-dot {
+  position: relative;
+}
+
+.status-dot::before {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  animation: pulse-ring 2s ease-out infinite;
+}
+
+.status-dot-pulse::before {
+  background: currentColor;
+  opacity: 0.3;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+}

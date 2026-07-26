@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}CI Review Agent{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: ['selector', '[data-theme="dark"]'],
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#eef2ff',
+              500: '#6366f1',
+              600: '#4f46e5',
+              700: '#4338ca',
+            }
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="/static/css/styles.css">
+  <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+  <script src="/static/js/app.js" defer></script>
+</head>
+<body class="min-h-screen flex flex-col">
+
+  <!-- Top Glass Header -->
+  <header class="glass-header px-6 py-3.5">
+    <div class="max-w-7xl mx-auto flex items-center justify-between">
+      
+      <!-- Brand Logo -->
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-purple-500 flex items-center justify-center shadow-lg shadow-indigo-500/20 border border-white/10">
+          <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+          </svg>
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="text-base font-bold tracking-tight text-slate-100">CI Review Agent</span>
+            <span class="text-[10px] font-mono px-2 py-0.5 rounded-md bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">v0.1.0</span>
+          </div>
+          <p class="text-xs text-slate-400 font-mono hidden sm:block">Automated CI Failure Healing</p>
+        </div>
+      </div>
+
+      <!-- Navigation & Status -->
+      <div class="flex items-center gap-2 sm:gap-4">
+        <!-- Live Status Pill -->
+        <div class="hidden md:flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium">
+          <span class="status-dot status-dot-pulse bg-emerald-400"></span>
+          <span>Server Active</span>
+        </div>
+
+        <!-- Navigation Tabs -->
+        <nav class="flex items-center gap-1 bg-slate-900/50 p-1 rounded-xl border border-white/5">
+          <a href="/" class="nav-link {% if active_page == 'dashboard' %}active{% endif %}">Dashboard</a>
+          <a href="/config" class="nav-link {% if active_page == 'config' %}active{% endif %}">Configuration</a>
+          <a href="/runs" class="nav-link {% if active_page == 'runs' %}active{% endif %}">Runs</a>
+        </nav>
+
+        <!-- Theme Switcher Button -->
+        <button id="theme-toggle" class="p-2 rounded-lg btn-ghost text-slate-400 hover:text-slate-100" title="Toggle Theme">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+          </svg>
+        </button>
+      </div>
+
+    </div>
+  </header>
+
+  <!-- Main Content Container -->
+  <main class="flex-grow max-w-7xl w-full mx-auto px-4 sm:px-6 py-8 animate-fade-in">
+    {% block content %}{% endblock %}
+  </main>
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container"></div>
+
+  <!-- Footer -->
+  <footer class="border-t border-slate-800/60 py-6 text-center text-xs text-slate-500 font-mono">
+    CI Review Agent &copy; 2026 &bull; High Performance Self-Healing Autonomous Pipeline
+  </footer>
+
+</body>
+</html>

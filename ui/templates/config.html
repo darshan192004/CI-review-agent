@@ -1,0 +1,346 @@
+{% extends "base.html" %}
+{% block title %}Configuration — CI Review Agent{% endblock %}
+{% block content %}
+<div class="space-y-8 max-w-6xl mx-auto">
+  
+  <!-- Header Title -->
+  <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+    <div>
+      <h1 class="text-3xl font-bold tracking-tight">Agent Advanced Configuration</h1>
+      <p class="text-sm text-slate-400 mt-1">Full control over LLMs, local models, SCM platforms, checkpointing engine, and notification webhooks.</p>
+    </div>
+    <button type="submit" form="settings-form" class="btn-primary">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+      Save All Settings
+    </button>
+  </div>
+
+  <form id="settings-form" hx-put="/api/settings" hx-swap="none" class="space-y-8">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+      <!-- 1. AI Provider & Large Language Models -->
+      <div class="glass-panel p-6 config-section space-y-5">
+        <div class="flex items-center gap-3">
+          <div class="p-2.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+          </div>
+          <div>
+            <h3 class="font-semibold text-lg">AI & LLM Model Engines</h3>
+            <p class="text-xs text-slate-400">Configure Cloud LLMs (OpenAI/Claude) or Local LLMs (Ollama)</p>
+          </div>
+        </div>
+
+        <div class="space-y-4 pt-2">
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Active LLM Provider</label>
+            <select name="llm_provider" class="select-field">
+              <option value="openai" {% if settings.llm_provider == 'openai' %}selected{% endif %}>OpenAI (GPT-4o / o3-mini)</option>
+              <option value="anthropic" {% if settings.llm_provider == 'anthropic' %}selected{% endif %}>Anthropic (Claude 3.7 Sonnet)</option>
+              <option value="ollama" {% if settings.llm_provider == 'ollama' %}selected{% endif %}>Ollama (Local LLM)</option>
+              <option value="azure_openai" {% if settings.llm_provider == 'azure_openai' %}selected{% endif %}>Azure OpenAI Service</option>
+            </select>
+          </div>
+
+          <!-- OpenAI Options -->
+          <div class="p-4 rounded-xl bg-slate-900/50 border border-white/5 space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-semibold text-indigo-400">OpenAI Model Engine</span>
+              <span class="text-[10px] text-slate-500 font-mono">Cloud</span>
+            </div>
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">Select Model Preset</label>
+              <select name="openai_model" class="select-field text-xs">
+                <option value="gpt-4o" {% if settings.openai_model == 'gpt-4o' %}selected{% endif %}>gpt-4o (Recommended - Multimodal & Fast)</option>
+                <option value="gpt-4o-mini" {% if settings.openai_model == 'gpt-4o-mini' %}selected{% endif %}>gpt-4o-mini (Lightweight & High Speed)</option>
+                <option value="o3-mini" {% if settings.openai_model == 'o3-mini' %}selected{% endif %}>o3-mini (High Reasoning)</option>
+                <option value="o1" {% if settings.openai_model == 'o1' %}selected{% endif %}>o1 (Deep Reasoning)</option>
+                <option value="gpt-4-turbo" {% if settings.openai_model == 'gpt-4-turbo' %}selected{% endif %}>gpt-4-turbo</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">OpenAI API Key</label>
+              <div class="secret-wrapper">
+                <input type="password" id="openai_api_key" name="openai_api_key" value="{{ settings.openai_api_key }}" placeholder="sk-..." class="input-field font-mono text-xs">
+                <button type="button" onclick="toggleSecret('openai_api_key', this)" class="secret-toggle">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Anthropic Options -->
+          <div class="p-4 rounded-xl bg-slate-900/50 border border-white/5 space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-semibold text-purple-400">Anthropic Claude Engine</span>
+              <span class="text-[10px] text-slate-500 font-mono">Cloud</span>
+            </div>
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">Select Model Preset</label>
+              <select name="anthropic_model" class="select-field text-xs">
+                <option value="claude-3-7-sonnet-latest" {% if settings.anthropic_model == 'claude-3-7-sonnet-latest' or settings.anthropic_model == 'claude-sonnet-4-20250514' %}selected{% endif %}>claude-3-7-sonnet-latest (State of the Art Coding)</option>
+                <option value="claude-3-5-sonnet-latest" {% if settings.anthropic_model == 'claude-3-5-sonnet-latest' %}selected{% endif %}>claude-3-5-sonnet-latest</option>
+                <option value="claude-3-5-haiku-latest" {% if settings.anthropic_model == 'claude-3-5-haiku-latest' %}selected{% endif %}>claude-3-5-haiku-latest (Fastest)</option>
+                <option value="claude-3-opus-20240229" {% if settings.anthropic_model == 'claude-3-opus-20240229' %}selected{% endif %}>claude-3-opus</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">Anthropic API Key</label>
+              <div class="secret-wrapper">
+                <input type="password" id="anthropic_api_key" name="anthropic_api_key" value="{{ settings.anthropic_api_key }}" placeholder="sk-ant-..." class="input-field font-mono text-xs">
+                <button type="button" onclick="toggleSecret('anthropic_api_key', this)" class="secret-toggle">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Ollama Local Options -->
+          <div class="p-4 rounded-xl bg-slate-900/50 border border-white/5 space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-semibold text-emerald-400">Ollama Local LLM Integration</span>
+              <button type="button" hx-post="/api/test/ollama" hx-swap="none" class="btn-secondary text-[10px] px-2 py-0.5">Test Server</button>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <label class="block text-[11px] text-slate-400 mb-1">Base Endpoint</label>
+                <input type="text" name="ollama_base_url" value="{{ settings.ollama_base_url }}" placeholder="http://localhost:11434" class="input-field font-mono text-xs">
+              </div>
+              <div>
+                <label class="block text-[11px] text-slate-400 mb-1">Local Model</label>
+                <select name="ollama_model" class="select-field text-xs">
+                  <option value="llama3.3" {% if settings.ollama_model == 'llama3.3' %}selected{% endif %}>llama3.3</option>
+                  <option value="llama3.1" {% if settings.ollama_model == 'llama3.1' %}selected{% endif %}>llama3.1</option>
+                  <option value="deepseek-r1" {% if settings.ollama_model == 'deepseek-r1' %}selected{% endif %}>deepseek-r1</option>
+                  <option value="qwen2.5-coder" {% if settings.ollama_model == 'qwen2.5-coder' %}selected{% endif %}>qwen2.5-coder</option>
+                  <option value="mistral" {% if settings.ollama_model == 'mistral' %}selected{% endif %}>mistral</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. Agent Execution Tuning & Checkpointing Engine -->
+      <div class="glass-panel p-6 config-section space-y-5">
+        <div class="flex items-center gap-3">
+          <div class="p-2.5 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/></svg>
+          </div>
+          <div>
+            <h3 class="font-semibold text-lg">Agent Execution Engine</h3>
+            <p class="text-xs text-slate-400">Fine-tune self-correction loops, polling, and checkpoints</p>
+          </div>
+        </div>
+
+        <div class="space-y-4 pt-2">
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Self-Correction Max Retries</label>
+            <select name="max_retry_attempts" class="select-field">
+              <option value="1" {% if settings.max_retry_attempts == 1 %}selected{% endif %}>1 Attempt (Fastest - Single Attempt)</option>
+              <option value="3" {% if settings.max_retry_attempts == 3 %}selected{% endif %}>3 Attempts (Balanced - Standard Healing)</option>
+              <option value="5" {% if settings.max_retry_attempts == 5 %}selected{% endif %}>5 Attempts (Thorough - Multi-Step Debugging)</option>
+              <option value="10" {% if settings.max_retry_attempts == 10 %}selected{% endif %}>10 Attempts (Exhaustive - Complex Repos)</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Checkpointer Storage Engine</label>
+            <select name="checkpointer_type" class="select-field">
+              <option value="sqlite" {% if settings.checkpointer_type == 'sqlite' %}selected{% endif %}>SQLite Checkpointer (Persistent DB State)</option>
+              <option value="memory" {% if settings.checkpointer_type == 'memory' %}selected{% endif %}>In-Memory Checkpointer (Transient / Fast Dev)</option>
+            </select>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">CI Poll Interval</label>
+              <select name="poll_interval_seconds" class="select-field text-xs">
+                <option value="10" {% if settings.poll_interval_seconds == 10 %}selected{% endif %}>10 seconds (Ultra-Fast)</option>
+                <option value="30" {% if settings.poll_interval_seconds == 30 %}selected{% endif %}>30 seconds (Default)</option>
+                <option value="60" {% if settings.poll_interval_seconds == 60 %}selected{% endif %}>60 seconds (Conservative)</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Poll Max Wait</label>
+              <select name="poll_max_wait_seconds" class="select-field text-xs">
+                <option value="300" {% if settings.poll_max_wait_seconds == 300 %}selected{% endif %}>300s (5 Minutes)</option>
+                <option value="600" {% if settings.poll_max_wait_seconds == 600 %}selected{% endif %}>600s (10 Minutes)</option>
+                <option value="1200" {% if settings.poll_max_wait_seconds == 1200 %}selected{% endif %}>1200s (20 Minutes)</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Max Error Log Tokens in LLM Context</label>
+            <select name="log_max_tokens" class="select-field">
+              <option value="2000" {% if settings.log_max_tokens == 2000 %}selected{% endif %}>2,000 Tokens (Compact)</option>
+              <option value="4000" {% if settings.log_max_tokens == 4000 %}selected{% endif %}>4,000 Tokens (Standard)</option>
+              <option value="8000" {% if settings.log_max_tokens == 8000 %}selected{% endif %}>8,000 Tokens (Extended stack traces)</option>
+              <option value="16000" {% if settings.log_max_tokens == 16000 %}selected{% endif %}>16,000 Tokens (Deep log dumps)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. CI Platform & Repository SCM Integration -->
+      <div class="glass-panel p-6 config-section space-y-5">
+        <div class="flex items-center gap-3">
+          <div class="p-2.5 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+          </div>
+          <div>
+            <h3 class="font-semibold text-lg">CI & Git Workspaces</h3>
+            <p class="text-xs text-slate-400">Configure GitHub/Forgejo tokens, branches, and PR creation</p>
+          </div>
+        </div>
+
+        <div class="space-y-4 pt-2">
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">GitHub Personal Token</label>
+            <div class="secret-wrapper">
+              <input type="password" id="github_token" name="github_token" value="{{ settings.github_token }}" placeholder="ghp_..." class="input-field font-mono text-xs">
+              <button type="button" onclick="toggleSecret('github_token', this)" class="secret-toggle">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Forgejo Access Token</label>
+            <div class="secret-wrapper">
+              <input type="password" id="forgejo_token" name="forgejo_token" value="{{ settings.forgejo_token }}" placeholder="Token..." class="input-field font-mono text-xs">
+              <button type="button" onclick="toggleSecret('forgejo_token', this)" class="secret-toggle">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Local Git Repo Path</label>
+              <input type="text" name="git_repo_path" value="{{ settings.git_repo_path }}" class="input-field font-mono text-xs">
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Default Target Branch</label>
+              <select name="git_default_branch" class="select-field text-xs">
+                <option value="main" {% if settings.git_default_branch == 'main' %}selected{% endif %}>main</option>
+                <option value="master" {% if settings.git_default_branch == 'master' %}selected{% endif %}>master</option>
+                <option value="develop" {% if settings.git_default_branch == 'develop' %}selected{% endif %}>develop</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Automated Fix Pull Requests</label>
+            <select name="auto_create_pull_request" class="select-field">
+              <option value="true" {% if settings.auto_create_pull_request == 'true' %}selected{% endif %}>Enabled (Create fix branch & open PR automatically)</option>
+              <option value="false" {% if settings.auto_create_pull_request == 'false' %}selected{% endif %}>Disabled (Generate fix patch & notify only)</option>
+            </select>
+          </div>
+
+          <div class="pt-2 flex items-center justify-between border-t border-white/5">
+            <button type="button" hx-post="/api/test/github" hx-swap="none" class="btn-secondary text-xs">
+              <span class="htmx-indicator spinner"></span>
+              Test GitHub Token
+            </button>
+            <button type="button" hx-post="/api/test/forgejo" hx-swap="none" class="btn-secondary text-xs">
+              <span class="htmx-indicator spinner"></span>
+              Test Forgejo Token
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4. Universal Messaging & Webhook Alerts -->
+      <div class="glass-panel p-6 config-section space-y-5">
+        <div class="flex items-center gap-3">
+          <div class="p-2.5 rounded-lg bg-purple-500/10 text-purple-400 border border-purple-500/20">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+          </div>
+          <div>
+            <h3 class="font-semibold text-lg">MCP Messaging & Webhooks</h3>
+            <p class="text-xs text-slate-400">Configure alert channels and notification trigger filters</p>
+          </div>
+        </div>
+
+        <div class="space-y-4 pt-2">
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Notification Trigger Filter</label>
+            <select name="notification_trigger_level" class="select-field">
+              <option value="failures_only" {% if settings.notification_trigger_level == 'failures_only' %}selected{% endif %}>Failures Only (Alert on CI errors & failures)</option>
+              <option value="always" {% if settings.notification_trigger_level == 'always' %}selected{% endif %}>Always (Alert on both successes and failures)</option>
+              <option value="success_only" {% if settings.notification_trigger_level == 'success_only' %}selected{% endif %}>Success Only</option>
+              <option value="never" {% if settings.notification_trigger_level == 'never' %}selected{% endif %}>Never (Mute all notifications)</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">MCP Server Executable Command</label>
+            <input type="text" name="mcp_server_command" value="{{ settings.mcp_server_command }}" class="input-field font-mono text-xs">
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Messaging Platform Transport</label>
+            <select name="messaging_platform" class="select-field">
+              <option value="mattermost" {% if settings.messaging_platform == 'mattermost' %}selected{% endif %}>Mattermost</option>
+              <option value="slack" {% if settings.messaging_platform == 'slack' %}selected{% endif %}>Slack</option>
+              <option value="discord" {% if settings.messaging_platform == 'discord' %}selected{% endif %}>Discord</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Mattermost Webhook URL</label>
+            <div class="secret-wrapper">
+              <input type="password" id="mattermost_webhook_url" name="mattermost_webhook_url" value="{{ settings.mattermost_webhook_url }}" placeholder="https://mattermost..." class="input-field font-mono text-xs">
+              <button type="button" onclick="toggleSecret('mattermost_webhook_url', this)" class="secret-toggle">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Slack Webhook URL</label>
+            <div class="secret-wrapper">
+              <input type="password" id="slack_webhook_url" name="slack_webhook_url" value="{{ settings.slack_webhook_url }}" placeholder="https://hooks.slack.com..." class="input-field font-mono text-xs">
+              <button type="button" onclick="toggleSecret('slack_webhook_url', this)" class="secret-toggle">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Discord Webhook URL</label>
+            <div class="secret-wrapper">
+              <input type="password" id="discord_webhook_url" name="discord_webhook_url" value="{{ settings.discord_webhook_url }}" placeholder="https://discord.com/api/webhooks..." class="input-field font-mono text-xs">
+              <button type="button" onclick="toggleSecret('discord_webhook_url', this)" class="secret-toggle">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="pt-2 flex items-center justify-between border-t border-white/5">
+            <button type="button" hx-post="/api/test/mcp" hx-swap="none" class="btn-secondary text-xs">
+              <span class="htmx-indicator spinner"></span>
+              Ping MCP Transport
+            </button>
+            <button type="button" hx-post="/api/test/messaging" hx-swap="none" class="btn-secondary text-xs">
+              <span class="htmx-indicator spinner"></span>
+              Send Test Alert
+            </button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Bottom Save Action Bar -->
+    <div class="glass-panel p-4 flex items-center justify-between sticky bottom-4 z-30">
+      <span class="text-xs text-slate-400 font-mono">All settings persist automatically into .env</span>
+      <button type="submit" class="btn-primary">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+        Save All Configurations
+      </button>
+    </div>
+  </form>
+</div>
+{% endblock %}

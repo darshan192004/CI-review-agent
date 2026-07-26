@@ -21,6 +21,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
+    serve_parser = subparsers.add_parser(
+        "serve", help="Start the webhook receiver server"
+    )
+    serve_parser.add_argument(
+        "--host",
+        default=settings.server_host,
+        help=f"Bind host (default: {settings.server_host})",
+    )
+    serve_parser.add_argument(
+        "--port",
+        type=int,
+        default=settings.server_port,
+        help=f"Bind port (default: {settings.server_port})",
+    )
+
     run_parser = subparsers.add_parser(
         "run", help="Run agent directly against a CI run"
     )
@@ -53,6 +68,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use InMemorySaver instead of AsyncSqliteSaver",
     )
 
+    subparsers.add_parser("setup", help="First-run configuration wizard")
+
     return parser
 
 
@@ -84,6 +101,19 @@ def setup_logging() -> None:
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[logging.StreamHandler(sys.stdout)],
+    )
+
+
+def cmd_serve(args: argparse.Namespace) -> None:
+    import uvicorn
+
+    logger.info("Starting webhook server on %s:%s", args.host, args.port)
+    uvicorn.run(
+        "server:app",
+        host=args.host,
+        port=args.port,
+        log_level="info",
+        access_log=True,
     )
 
 
@@ -155,8 +185,14 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
-    if args.command == "run":
+    if args.command == "serve":
+        cmd_serve(args)
+    elif args.command == "run":
         cmd_run(args)
+    elif args.command == "setup":
+        from setup_wizard import run_wizard
+
+        run_wizard()
     else:
         parser.print_help()
         sys.exit(1)

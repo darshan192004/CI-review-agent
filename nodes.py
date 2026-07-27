@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -23,6 +24,13 @@ def _get_llm() -> Any:
         return ChatAnthropic(
             model=settings.anthropic_model,
             api_key=settings.anthropic_api_key,
+        )
+    if settings.llm_provider == "gemini":
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        return ChatGoogleGenerativeAI(
+            model=settings.gemini_model,
+            google_api_key=settings.gemini_api_key,
         )
     from langchain_openai import ChatOpenAI
 
@@ -96,7 +104,7 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
 
         return {
             "failed_logs": failed_logs,
-            "attempt_count": 1,
+            "attempt_count": 0,
             "ci_author": author,
             "failure_summary": failure_summary,
             "commit_sha": head_sha,
@@ -107,7 +115,7 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
         logger.error("Failed to fetch logs: %s", e)
         return {
             "failed_logs": f"Error fetching logs: {e}",
-            "attempt_count": 1,
+            "attempt_count": 0,
             "failure_summary": f"Log fetch error: {e}",
             "notifications_sent": [],
         }
@@ -178,18 +186,42 @@ Analyze the failure and provide a fix as JSON."""
 
         patch_applied = await git_manager.apply_patch(analysis.unified_diff)
         if not patch_applied:
-            logger.warning("Patch failed to apply cleanly, attempting alternative")
+            logger.warning("Patch failed to apply, skipping commit/push")
+            return {
+                "llm_analysis": analysis.root_cause,
+                "patch_diff": "",
+                "attempt_count": attempt + 1,
+                "notifications_sent": ["Patch failed to apply"],
+            }
 
         commit_msg = f"fix(ci): automated patch attempt {attempt}"
         commit_sha = await git_manager.commit(commit_msg)
 
         await git_manager.push(state.get("branch", "main"))
 
+        new_run_id = state.get("run_id", "")
+        try:
+            ci_client = _build_ci_client(state)
+            repo = state.get("repository", "")
+            parts = repo.split("/")
+            owner, repo_name = parts[0], parts[1]
+            branch = state.get("branch", "main")
+            await asyncio.sleep(5)
+            runs = await ci_client.list_runs(owner, repo_name, branch)
+            if runs:
+                new_run_id = str(runs[0].get("id", state.get("run_id", "")))
+        except Exception as e:
+            logger.warning("Failed to discover new CI run after push: %s", e)
+        finally:
+            await ci_client.close()
+
         return {
             "llm_analysis": analysis.root_cause,
             "patch_diff": analysis.unified_diff,
             "commit_sha": commit_sha,
+            "run_id": new_run_id,
             "patch_summary": analysis.explanation,
+            "attempt_count": attempt + 1,
             "notifications_sent": [f"Patch committed: {commit_sha[:8]}"],
         }
 
@@ -198,6 +230,7 @@ Analyze the failure and provide a fix as JSON."""
         return {
             "llm_analysis": f"LLM error: {e}",
             "patch_diff": "",
+            "attempt_count": attempt + 1,
             "notifications_sent": [f"LLM fix attempt failed: {e}"],
         }
 

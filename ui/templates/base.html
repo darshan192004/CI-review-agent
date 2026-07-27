@@ -41,10 +41,10 @@
         </div>
         <div>
           <div class="flex items-center gap-2">
-            <span class="text-base font-bold tracking-tight text-slate-100">CI Review Agent</span>
-            <span class="text-[10px] font-mono px-2 py-0.5 rounded-md bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">v0.1.0</span>
+            <span class="text-base font-bold tracking-tight ci-text-main">CI Review Agent</span>
+            <span class="text-[10px] font-mono px-2 py-0.5 rounded-md bg-indigo-500/10 text-indigo-500 dark:text-indigo-400 border border-indigo-500/20">v0.1.0</span>
           </div>
-          <p class="text-xs text-slate-400 font-mono hidden sm:block">Automated CI Failure Healing</p>
+          <p class="text-xs ci-text-muted font-mono hidden sm:block">Automated CI Failure Healing</p>
         </div>
       </div>
 
@@ -57,14 +57,14 @@
         </div>
 
         <!-- Navigation Tabs -->
-        <nav class="flex items-center gap-1 bg-slate-900/50 p-1 rounded-xl border border-white/5">
+        <nav class="flex items-center gap-1 ci-bg-surface p-1 rounded-xl ci-border">
           <a href="/" class="nav-link {% if active_page == 'dashboard' %}active{% endif %}">Dashboard</a>
           <a href="/config" class="nav-link {% if active_page == 'config' %}active{% endif %}">Configuration</a>
           <a href="/runs" class="nav-link {% if active_page == 'runs' %}active{% endif %}">Runs</a>
         </nav>
 
         <!-- Theme Switcher Button -->
-        <button id="theme-toggle" class="p-2 rounded-lg btn-ghost text-slate-400 hover:text-slate-100" title="Toggle Theme">
+        <button id="theme-toggle" class="p-2 rounded-lg btn-ghost ci-text-muted hover:ci-text-main" title="Toggle Theme">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
           </svg>
@@ -83,7 +83,7 @@
   <div id="toast-container"></div>
 
   <!-- Footer -->
-  <footer class="border-t border-slate-800/60 py-6 text-center text-xs text-slate-500 font-mono">
+  <footer class="border-t border-slate-800/60 dark:border-slate-800/60 border-slate-200 py-6 text-center text-xs ci-text-dim font-mono">
     CI Review Agent &copy; 2026 &bull; High Performance Self-Healing Autonomous Pipeline
   </footer>
 

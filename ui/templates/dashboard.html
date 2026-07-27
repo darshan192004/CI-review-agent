@@ -7,7 +7,7 @@
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
     <div>
       <h1 class="text-3xl font-bold tracking-tight">Agent Dashboard</h1>
-      <p class="text-sm text-slate-400 mt-1">Real-time status overview of CI failure monitoring & self-healing runs.</p>
+      <p class="text-sm ci-text-muted mt-1">Real-time status overview of CI failure monitoring & self-healing runs.</p>
     </div>
     <div class="flex items-center gap-3">
       <button hx-post="/api/trigger-test-run" hx-swap="none" hx-on::after-request="showToast('Simulated CI webhook triggered!', 'info'); htmx.trigger('#runs-table-body', 'load');" class="btn-secondary text-xs">
@@ -21,7 +21,7 @@
   <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" id="metrics-grid">
     <div class="glass-panel p-5 space-y-2">
       <div class="flex items-center justify-between">
-        <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Processing Jobs</span>
+        <span class="text-xs font-semibold uppercase tracking-wider ci-text-muted">Processing Jobs</span>
         <span class="p-2 rounded-lg bg-blue-500/10 text-blue-400">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
         </span>
@@ -31,7 +31,7 @@
 
     <div class="glass-panel p-5 space-y-2">
       <div class="flex items-center justify-between">
-        <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Succeeded Runs</span>
+        <span class="text-xs font-semibold uppercase tracking-wider ci-text-muted">Succeeded Runs</span>
         <span class="p-2 rounded-lg bg-emerald-500/10 text-emerald-400">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
         </span>
@@ -41,7 +41,7 @@
 
     <div class="glass-panel p-5 space-y-2">
       <div class="flex items-center justify-between">
-        <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Failed / Errors</span>
+        <span class="text-xs font-semibold uppercase tracking-wider ci-text-muted">Failed / Errors</span>
         <span class="p-2 rounded-lg bg-rose-500/10 text-rose-400">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
         </span>
@@ -51,23 +51,23 @@
 
     <div class="glass-panel p-5 space-y-2">
       <div class="flex items-center justify-between">
-        <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">System Uptime</span>
+        <span class="text-xs font-semibold uppercase tracking-wider ci-text-muted">System Uptime</span>
         <span class="p-2 rounded-lg bg-purple-500/10 text-purple-400">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
         </span>
       </div>
-      <p class="text-3xl font-bold text-slate-100 font-mono" id="metric-uptime">{{ uptime }}</p>
+      <p class="text-3xl font-bold ci-text-main font-mono" id="metric-uptime">{{ uptime }}</p>
     </div>
   </div>
 
   <!-- Recent Activity Table Container -->
   <div class="glass-panel overflow-hidden">
-    <div class="px-6 py-4 border-b border-white/5 flex items-center justify-between">
+    <div class="px-6 py-4 ci-border-bottom flex items-center justify-between">
       <div class="flex items-center gap-2">
         <h2 class="font-semibold text-base">Recent Runs</h2>
         <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
       </div>
-      <span class="text-xs text-slate-400 font-mono">Live Instant Sync (1s)</span>
+      <span class="text-xs ci-text-muted font-mono">Live Instant Sync (1s)</span>
     </div>
 
     <!-- HTMX Partial Live Updating Container (every 1s for immediate sync) -->
@@ -80,15 +80,20 @@
             <th>Run ID</th>
             <th>Status</th>
             <th>Platform</th>
+            <th>Branch</th>
+            <th>Commit</th>
+            <th>Author</th>
           </tr>
         </thead>
         <tbody>
           {% for run in recent_runs %}
           <tr>
             <td class="font-mono text-xs text-indigo-400">{{ run.repository }}</td>
-            <td class="font-mono text-xs text-slate-400">#{{ run.run_id }}</td>
+            <td class="font-mono text-xs ci-text-muted">#{{ run.run_id }}</td>
             <td>
-              {% if run.status == 'processing' %}
+              {% if run.status == 'AGENT_WORKING' %}
+              <span class="badge badge-blue"><span class="status-dot status-dot-pulse bg-blue-400"></span>Agent Working</span>
+              {% elif run.status == 'processing' %}
               <span class="badge badge-blue"><span class="status-dot status-dot-pulse bg-blue-400"></span>Processing</span>
               {% elif run.status in ('PASSED', 'success') %}
               <span class="badge badge-green"><span class="status-dot bg-emerald-400"></span>Passed</span>
@@ -98,16 +103,19 @@
               <span class="badge badge-orange">{{ run.status }}</span>
               {% endif %}
             </td>
-            <td class="text-xs text-slate-400 uppercase font-mono">{{ run.platform | default('—') }}</td>
+            <td class="text-xs ci-text-muted uppercase font-mono">{{ run.platform | default('—') }}</td>
+            <td class="text-xs ci-text-muted">{{ run.branch | default('—') }}</td>
+            <td class="text-xs ci-text-muted font-mono">{{ run.commit_sha[:8] if run.commit_sha else '—' }}</td>
+            <td class="text-xs ci-text-muted">{{ run.author | default('—') }}</td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
       {% else %}
-      <div class="p-12 text-center text-slate-400">
-        <svg class="w-12 h-12 mx-auto text-slate-600 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+      <div class="p-12 text-center ci-text-muted">
+        <svg class="w-12 h-12 mx-auto ci-text-dim mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
         <p class="text-sm font-medium">No webhook runs recorded yet.</p>
-        <p class="text-xs text-slate-500 mt-1">Click "Simulate Webhook Run" above to test the workflow.</p>
+        <p class="text-xs ci-text-dim mt-1">Click "Simulate Webhook Run" above to test the workflow.</p>
       </div>
       {% endif %}
     </div>

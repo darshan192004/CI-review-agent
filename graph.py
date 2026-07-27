@@ -5,6 +5,7 @@ from typing import Any, Literal
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
+from config import settings
 from nodes import (
     node_fetch_logs_and_alert,
     node_llm_fix_code,
@@ -22,7 +23,7 @@ def route_ci_outcome(
         return "notify_success"
 
     attempt = state.get("attempt_count", 1)
-    if attempt >= 3:
+    if attempt >= settings.max_retry_attempts:
         return "notify_human_escalation"
 
     return "fix_code"

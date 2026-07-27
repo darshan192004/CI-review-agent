@@ -198,7 +198,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .btn-ghost:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(128, 128, 128, 0.1);
   color: var(--text-main);
 }
 
@@ -294,9 +294,9 @@ h1, h2, h3, h4, h5, h6 {
 .spinner {
   width: 1rem;
   height: 1rem;
-  border: 2px solid rgba(255, 255, 255, 0.3);
+  border: 2px solid var(--text-dim);
   border-radius: 50%;
-  border-top-color: #ffffff;
+  border-top-color: var(--accent-primary);
   animation: spin 0.6s linear infinite;
 }
 
@@ -357,7 +357,7 @@ h1, h2, h3, h4, h5, h6 {
 
 .nav-link:hover {
   color: var(--text-main);
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(128, 128, 128, 0.1);
 }
 
 .nav-link.active {
@@ -413,7 +413,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .data-table tbody tr:hover {
-  background-color: rgba(255, 255, 255, 0.03);
+  background-color: rgba(128, 128, 128, 0.06);
 }
 
 /* Secret input wrapper */
@@ -443,4 +443,45 @@ h1, h2, h3, h4, h5, h6 {
 
 .secret-toggle:hover {
   color: var(--text-main);
+}
+
+/* ============================================================
+   Theme-aware utility classes (prefixed with ci- to avoid Tailwind conflicts)
+   ============================================================ */
+
+/* Text colors */
+.ci-text-main { color: var(--text-main); }
+.ci-text-muted { color: var(--text-muted); }
+.ci-text-dim { color: var(--text-dim); }
+
+/* Background colors */
+.ci-bg-body { background-color: var(--bg-body); }
+.ci-bg-surface { background-color: var(--bg-surface); }
+.ci-bg-surface-elevated { background-color: var(--bg-surface-elevated); }
+.ci-bg-card { background-color: var(--bg-card); }
+
+/* Border colors */
+.ci-border { border-color: var(--border-color); }
+.ci-border-hover { border-color: var(--border-color-hover); }
+
+/* Gradient backgrounds for sub-panels (used in config cards) */
+.ci-panel-bg {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 0.75rem;
+}
+
+.ci-panel-bg-elevated {
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: 0.75rem;
+}
+
+/* Separator line */
+.ci-border-top {
+  border-top: 1px solid var(--border-color);
+}
+
+.ci-border-bottom {
+  border-bottom: 1px solid var(--border-color);
 }

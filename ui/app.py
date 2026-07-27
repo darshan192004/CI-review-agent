@@ -23,6 +23,8 @@ templates = Jinja2Templates(directory=str(_UI_DIR / "templates"))
 
 
 def _status_badge(status: str) -> str:
+    if status == "AGENT_WORKING":
+        return '<span class="badge badge-blue"><span class="status-dot status-dot-pulse bg-blue-400"></span>Agent Working</span>'
     if status == "processing":
         return '<span class="badge badge-blue"><span class="status-dot status-dot-pulse bg-blue-400"></span>Processing</span>'
     if status in ("PASSED", "success"):
@@ -64,6 +66,8 @@ def _get_settings() -> Any:
         "openai_model",
         "anthropic_api_key",
         "anthropic_model",
+        "gemini_api_key",
+        "gemini_model",
         "ollama_base_url",
         "ollama_model",
         "azure_openai_endpoint",
@@ -97,8 +101,9 @@ def _get_settings() -> Any:
 
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request) -> HTMLResponse:
-    counts = run_tracker.count_by_status()
-    recent = run_tracker.get_all_runs()[-10:]
+    counts = await run_tracker.count_by_status()
+    recent = await run_tracker.get_all_runs()
+    recent = recent[-10:]
     recent.reverse()
     uptime = _format_uptime(_get_uptime_seconds())
 
@@ -119,6 +124,11 @@ async def dashboard(request: Request) -> HTMLResponse:
                     "run_id": r["run_id"],
                     "status": r["status"],
                     "platform": r.get("platform", ""),
+                    "branch": r.get("branch", ""),
+                    "commit_sha": r.get("commit_sha", ""),
+                    "author": r.get("author", ""),
+                    "failure_summary": r.get("failure_summary", ""),
+                    "patch_summary": r.get("patch_summary", ""),
                 }
                 for r in recent
             ],
@@ -145,7 +155,7 @@ async def runs_page(
     status: str = Query("", alias="status"),
     platform: str = Query("", alias="platform"),
 ) -> HTMLResponse:
-    all_runs = run_tracker.get_all_runs()
+    all_runs = await run_tracker.get_all_runs()
     all_runs.reverse()
 
     if status:
@@ -159,6 +169,11 @@ async def runs_page(
             "run_id": r["run_id"],
             "status": r["status"],
             "platform": r.get("platform", ""),
+            "branch": r.get("branch", ""),
+            "commit_sha": r.get("commit_sha", ""),
+            "author": r.get("author", ""),
+            "failure_summary": r.get("failure_summary", ""),
+            "patch_summary": r.get("patch_summary", ""),
         }
         for r in all_runs
     ]
@@ -177,22 +192,27 @@ async def runs_page(
 
 @router.get("/api/dashboard/partial", response_class=HTMLResponse)
 async def dashboard_partial() -> HTMLResponse:
-    counts = run_tracker.count_by_status()
-    recent = run_tracker.get_all_runs()[-10:]
+    counts = await run_tracker.count_by_status()
+    recent = await run_tracker.get_all_runs()
+    recent = recent[-10:]
     recent.reverse()
     uptime = _format_uptime(_get_uptime_seconds())
 
-    active_cnt = counts.get("processing", 0)
+    active_cnt = counts.get("processing", 0) + counts.get("AGENT_WORKING", 0)
     success_cnt = counts.get("PASSED", 0) + counts.get("success", 0)
     failed_cnt = counts.get("FAILED", 0) + counts.get("failed", 0) + counts.get("error", 0)
 
     rows = ""
     for run in recent:
+        commit_short = run.get("commit_sha", "")[:8] if run.get("commit_sha") else "—"
         rows += f"""<tr>
             <td class="font-mono text-xs text-indigo-400">{run["repository"]}</td>
             <td class="font-mono text-xs text-slate-400">#{run["run_id"]}</td>
             <td>{_status_badge(run["status"])}</td>
             <td class="text-xs text-slate-400 uppercase font-mono">{run.get("platform", "—")}</td>
+            <td class="text-xs text-slate-400">{run.get("branch", "—")}</td>
+            <td class="text-xs text-slate-400 font-mono">{commit_short}</td>
+            <td class="text-xs text-slate-400">{run.get("author", "—")}</td>
         </tr>"""
 
     html = f"""
@@ -200,7 +220,7 @@ async def dashboard_partial() -> HTMLResponse:
     <p id="metric-active" hx-swap-oob="outerHTML" class="text-3xl font-bold text-blue-400 font-mono">{active_cnt}</p>
     <p id="metric-success" hx-swap-oob="outerHTML" class="text-3xl font-bold text-emerald-400 font-mono">{success_cnt}</p>
     <p id="metric-failed" hx-swap-oob="outerHTML" class="text-3xl font-bold text-rose-400 font-mono">{failed_cnt}</p>
-    <p id="metric-uptime" hx-swap-oob="outerHTML" class="text-3xl font-bold text-slate-100 font-mono">{uptime}</p>
+    <p id="metric-uptime" hx-swap-oob="outerHTML" class="text-3xl font-bold ci-text-main font-mono">{uptime}</p>
 
     <!-- Table Body HTML -->
     <table class="data-table">
@@ -210,10 +230,14 @@ async def dashboard_partial() -> HTMLResponse:
           <th>Run ID</th>
           <th>Status</th>
           <th>Platform</th>
+          <th>Branch</th>
+          <th>Commit</th>
+          <th>Author</th>
         </tr>
       </thead>
       <tbody>
-        {rows if rows else '<tr><td colspan="4" class="p-12 text-center text-slate-400 text-sm">No webhook runs recorded yet.</td></tr>'}
+        {rows if rows else '<tr><td colspan="7" class="p-12 text-center text-slate-400 text-sm">'
+                'No webhook runs recorded yet.</td></tr>'}
       </tbody>
     </table>"""
 
@@ -260,6 +284,8 @@ async def update_settings(request: Request) -> JSONResponse:
         "openai_model",
         "anthropic_api_key",
         "anthropic_model",
+        "gemini_api_key",
+        "gemini_model",
         "ollama_base_url",
         "ollama_model",
         "azure_openai_endpoint",
@@ -308,13 +334,13 @@ async def trigger_test_run() -> JSONResponse:
     import random
     run_id = str(random.randint(1000, 9999))
     repo = "owner/ci-test-repo"
-    run_tracker.record(repository=repo, run_id=run_id, status="processing")
+    await run_tracker.record(repository=repo, run_id=run_id, status="processing")
     
     # Simulate run completion after background task
     import asyncio
     async def _complete():
         await asyncio.sleep(2)
-        run_tracker.update_status(repository=repo, run_id=run_id, status="PASSED")
+        await run_tracker.update_status(repository=repo, run_id=run_id, status="PASSED")
 
     asyncio.create_task(_complete())
     return JSONResponse(content={"ok": True, "run_id": run_id, "repository": repo})

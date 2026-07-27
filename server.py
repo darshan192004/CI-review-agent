@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -19,6 +20,7 @@ from services.webhook_verify import (
     verify_forgejo_signature,
     verify_github_signature,
 )
+from services.ci_poller import start_ci_poller
 from ui.app import router as ui_router
 
 logger = logging.getLogger(__name__)
@@ -31,9 +33,17 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     global _start_time
     _start_time = time.monotonic()
     logger.info("CI Review Agent server starting")
-    yield
-    logger.info("CI Review Agent server shutting down")
-    run_tracker.clear()
+    poller_task = asyncio.create_task(start_ci_poller(interval_seconds=30))
+    try:
+        yield
+    finally:
+        poller_task.cancel()
+        try:
+            await poller_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("CI Review Agent server shutting down")
+        await run_tracker.clear()
 
 
 app = FastAPI(
@@ -57,8 +67,8 @@ async def health_check() -> dict[str, str]:
 @app.get("/status")
 async def get_status() -> dict:
     uptime = time.monotonic() - _start_time if _start_time else 0
-    counts = run_tracker.count_by_status()
-    active = run_tracker.get_active_runs()
+    counts = await run_tracker.count_by_status()
+    active = await run_tracker.get_active_runs()
     return {
         "status": "running",
         "uptime_seconds": round(uptime, 1),
@@ -79,6 +89,11 @@ async def handle_forgejo_webhook(request: Request) -> Response:
         except WebhookVerificationError as e:
             logger.warning("Forgejo webhook verification failed: %s", e)
             raise HTTPException(status_code=401, detail=str(e))
+
+    event_type = request.headers.get("X-Forgejo-Event", "")
+    if event_type not in ("workflow_run", "push", "action_run_failure", "action_run_success", "action_run_recover"):
+        logger.info("Ignoring Forgejo event: %s", event_type)
+        return Response(status_code=200, content="Ignored event type")
 
     try:
         payload = await request.json()

@@ -48,6 +48,11 @@ class CIClient(abc.ABC):
         self, owner: str, repo: str, run_id: str
     ) -> dict[str, Any]: ...
 
+    @abc.abstractmethod
+    async def list_runs(
+        self, owner: str, repo: str, branch: str, limit: int = 1
+    ) -> list[dict[str, Any]]: ...
+
 
 class GitHubCIClient(CIClient):
     def _headers(self) -> dict[str, str]:
@@ -131,6 +136,16 @@ class GitHubCIClient(CIClient):
         resp.raise_for_status()
         return resp.json()
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    async def list_runs(
+        self, owner: str, repo: str, branch: str, limit: int = 1
+    ) -> list[dict[str, Any]]:
+        url = f"{self.base_url}/repos/{owner}/{repo}/actions/runs"
+        params = {"branch": branch, "per_page": limit}
+        resp = await self._client.get(url, headers=self._headers(), params=params)
+        resp.raise_for_status()
+        return resp.json().get("workflow_runs", [])
+
 
 class ForgejoCIClient(CIClient):
     def _headers(self) -> dict[str, str]:
@@ -141,26 +156,28 @@ class ForgejoCIClient(CIClient):
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     async def fetch_logs(self, owner: str, repo: str, run_id: str) -> str:
-        url = f"{self.base_url}/api/v1/repos/{owner}/{repo}/actions/runs/{run_id}"
-        resp = await self._client.get(url, headers=self._headers())
+        run_url = f"{self.base_url}/api/v1/repos/{owner}/{repo}/actions/runs/{run_id}"
+        resp = await self._client.get(run_url, headers=self._headers())
         resp.raise_for_status()
-        data = resp.json()
-        jobs = data.get("jobs", [])
+
+        tasks_url = f"{self.base_url}/api/v1/repos/{owner}/{repo}/actions/runs/{run_id}/tasks"
+        tasks_resp = await self._client.get(tasks_url, headers=self._headers())
+        tasks_resp.raise_for_status()
+        tasks = tasks_resp.json().get("tasks", [])
 
         all_logs: list[str] = []
-        for job in jobs:
-            for step in job.get("steps", []):
-                name = step.get("name", "unknown")
-                status = step.get("status", "")
-                if status == "failure":
-                    all_logs.append(f"FAILED STEP: {name}")
-                    log_url = step.get("log_url", "")
-                    if log_url:
-                        log_resp = await self._client.get(
-                            log_url, headers=self._headers()
-                        )
-                        if log_resp.status_code == 200:
-                            all_logs.append(log_resp.text[:2000])
+        for task in tasks:
+            task_name = task.get("name", "unknown")
+            task_status = task.get("status", "")
+            if task_status == "failure":
+                all_logs.append(f"FAILED TASK: {task_name}")
+                log_url = task.get("log_url", "")
+                if log_url:
+                    log_resp = await self._client.get(
+                        log_url, headers=self._headers()
+                    )
+                    if log_resp.status_code == 200:
+                        all_logs.append(log_resp.text[:2000])
 
         raw = "\n".join(all_logs) if all_logs else "No failure details found"
         return parse_ci_logs(raw)
@@ -210,6 +227,16 @@ class ForgejoCIClient(CIClient):
         resp = await self._client.get(url, headers=self._headers())
         resp.raise_for_status()
         return resp.json()
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    async def list_runs(
+        self, owner: str, repo: str, branch: str, limit: int = 1
+    ) -> list[dict[str, Any]]:
+        url = f"{self.base_url}/api/v1/repos/{owner}/{repo}/actions/runs"
+        params = {"branch": branch, "limit": limit}
+        resp = await self._client.get(url, headers=self._headers(), params=params)
+        resp.raise_for_status()
+        return resp.json().get("workflow_runs", [])
 
 
 def create_ci_client(platform: str, token: str, base_url: str) -> CIClient:

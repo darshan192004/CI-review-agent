@@ -2,6 +2,8 @@
 
 An autonomous, self-healing CI/CD agent built with **LangGraph**, **FastAPI**, **HTMX**, and **Model Context Protocol (MCP)**. It monitors CI build failures (GitHub Actions / Forgejo CI), diagnoses root causes using Cloud or Local LLMs (OpenAI, Anthropic, Ollama, Azure OpenAI), applies code patches, verifies fixes, and notifies engineering teams.
 
+**Current Status**: Functional MVP — webhook ingestion, LLM analysis, and run tracking are operational. Dynamic repo cloning and reliable patch application are in active development (see [docs/PRODUCT_AND_TECHNICAL_DOCUMENTATION.md](docs/PRODUCT_AND_TECHNICAL_DOCUMENTATION.md)).
+
 ---
 
 ## ⚡ Quick Start

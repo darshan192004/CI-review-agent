@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
 
 from main import run_agent
 from services.run_tracker import run_tracker
@@ -19,14 +18,32 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
     run_id = event.run_id
 
     if not run_id:
-        logger.warning("Webhook event missing run_id, skipping")
+        logger.warning(
+            "Webhook event missing run_id (repo=%s, action=%s), skipping",
+            repository,
+            event.action,
+        )
         return
 
-    if run_tracker.is_duplicate(repository, run_id):
-        logger.info("Duplicate webhook for %s run %s, skipping", repository, run_id)
+    if await run_tracker.is_duplicate(repository, run_id):
+        logger.info(
+            "Duplicate webhook for %s run %s (action=%s), skipping",
+            repository,
+            run_id,
+            event.action,
+        )
         return
 
-    run_tracker.record(repository, run_id, status="processing")
+    event_status = event.status or "processing"
+    await run_tracker.record(
+        repository,
+        run_id,
+        status=event_status,
+        platform=event.platform.value,
+        branch=event.branch or event.repository.default_branch,
+        commit_sha=event.commit_sha,
+        author=event.author,
+    )
 
     source_files: dict[str, str] = {}
 
@@ -48,12 +65,24 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
         "patch_summary": "",
     }
 
+    # Mark as agent working once we actually start processing
+    await run_tracker.update_status(repository, run_id, status="AGENT_WORKING")
+
     task_key = f"{repository}:{run_id}"
 
     try:
         result = await run_agent(initial_state, use_dev_checkpointer=True)
         final_status = result.get("ci_status", "UNKNOWN")
-        run_tracker.update_status(repository, run_id, status=final_status)
+        await run_tracker.update_status(
+            repository,
+            run_id,
+            status=final_status,
+            branch=result.get("branch", initial_state.get("branch", "")),
+            commit_sha=result.get("commit_sha", initial_state.get("commit_sha", "")),
+            author=result.get("ci_author", event.author),
+            failure_summary=result.get("failure_summary", ""),
+            patch_summary=result.get("patch_summary", ""),
+        )
         logger.info(
             "Agent completed for %s run %s: %s",
             repository,
@@ -62,7 +91,7 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
         )
     except Exception as e:
         logger.error("Agent failed for %s run %s: %s", repository, run_id, e)
-        run_tracker.update_status(repository, run_id, status="error")
+        await run_tracker.update_status(repository, run_id, status="error")
     finally:
         _active_tasks.pop(task_key, None)
 

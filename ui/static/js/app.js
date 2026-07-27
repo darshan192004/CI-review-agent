@@ -34,6 +34,36 @@ document.addEventListener("DOMContentLoaded", function () {
     } catch (e) {}
     showToast(msg, "error");
   });
+
+  // Handle test button responses (forgejo, github, ollama, mcp, messaging)
+  document.body.addEventListener("htmx:afterRequest", function (evt) {
+    const xhr = evt.detail.xhr;
+    const path = evt.detail.requestConfig?.path || evt.detail.path || "";
+    
+    if (path.includes("/api/test/")) {
+      try {
+        const res = JSON.parse(xhr.responseText);
+        if (res.ok) {
+          const detail = res.user ? `Connected as ${res.user}` : 
+                         res.models ? `Models: ${res.models.join(", ")}` :
+                         res.server ? `Server: ${res.server}` :
+                         res.detail || "Success";
+          showToast(detail, "success");
+        } else {
+          showToast(res.detail || "Test failed", "error");
+        }
+      } catch (e) {
+        if (xhr.status >= 400) {
+          let msg = "Test failed (" + xhr.status + ")";
+          try {
+            const res = JSON.parse(xhr.responseText);
+            if (res.detail) msg = res.detail;
+          } catch (e2) {}
+          showToast(msg, "error");
+        }
+      }
+    }
+  });
 });
 
 function toggleSecret(inputId, btn) {

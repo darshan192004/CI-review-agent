@@ -53,6 +53,10 @@ class WebhookEvent(BaseModel):
 
 
 def parse_forgejo_payload(payload: dict[str, Any]) -> WebhookEvent:
+    # Forgejo natively sends ActionPayload for action_run_* events
+    if payload.get("run") is not None:
+        return _parse_forgejo_action_payload(payload)
+
     action = payload.get("action", "")
     repo_data = payload.get("repository", {})
     sender_data = payload.get("sender", {})
@@ -64,13 +68,20 @@ def parse_forgejo_payload(payload: dict[str, Any]) -> WebhookEvent:
             ref.replace("refs/heads/", "") if ref.startswith("refs/heads/") else ref
         )
 
-    run_id = (
-        str(payload.get("workflow", {}).get("id", ""))
-        if isinstance(payload.get("workflow"), dict)
-        else ""
-    )
+    run_id = ""
+    workflow_data = payload.get("workflow")
+    if isinstance(workflow_data, dict):
+        run_id = str(workflow_data.get("id", ""))
     if not run_id:
         run_id = str(payload.get("run_id", ""))
+    if not run_id:
+        action_runs = payload.get("action_runs")
+        if isinstance(action_runs, list) and action_runs:
+            run_id = str(action_runs[0].get("id", ""))
+    if not run_id:
+        workflow_run = payload.get("workflow_run")
+        if isinstance(workflow_run, dict):
+            run_id = str(workflow_run.get("id", ""))
 
     head_sha = payload.get("sha", "")
     if not head_sha:
@@ -103,6 +114,39 @@ def parse_forgejo_payload(payload: dict[str, Any]) -> WebhookEvent:
         run_id=run_id,
         status=status,
         author=sender_data.get("login", ""),
+    )
+
+
+def _parse_forgejo_action_payload(payload: dict[str, Any]) -> WebhookEvent:
+    run = payload.get("run", {})
+    repo_data = run.get("repository") or {}
+    trigger_user = run.get("trigger_user") or {}
+    action = payload.get("action", "")
+
+    run_id = str(run.get("id", ""))
+    branch = run.get("prettyref", "")
+    commit_sha = run.get("commit_sha", "")
+    status = run.get("status", "")
+    title = run.get("title", "")
+
+    return WebhookEvent(
+        platform=CIPlatform.FORGEJO,
+        action=action,
+        repository=WebhookRepository(
+            full_name=repo_data.get("full_name", ""),
+            html_url=repo_data.get("html_url", ""),
+            default_branch=repo_data.get("default_branch", "main"),
+        ),
+        sender=WebhookSender(
+            login=trigger_user.get("login", ""),
+            id=trigger_user.get("id"),
+            avatar_url=trigger_user.get("avatar_url", ""),
+        ),
+        branch=branch,
+        commit_sha=commit_sha,
+        run_id=run_id,
+        status=status,
+        author=trigger_user.get("login", ""),
     )
 
 

@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -38,7 +43,9 @@ class Settings(BaseSettings):
     azure_openai_endpoint: str = ""
     azure_openai_api_key: str = ""
     azure_openai_deployment: str = ""
-    llm_provider: str = "openai"  # "openai", "anthropic", "ollama", "azure_openai"
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.0-flash"
+    llm_provider: str = "openai"  # "openai", "anthropic", "ollama", "azure_openai", "gemini"
 
     # Agent Engine Options
     max_retry_attempts: int = 3
@@ -73,6 +80,17 @@ class Settings(BaseSettings):
         if self.mcp_server_env:
             env.update(self.mcp_server_env)
         return env
+
+    def model_post_init(self, _context: object) -> None:
+        if self.mcp_server_command:
+            cmd_path = Path(self.mcp_server_command)
+            if not cmd_path.is_file():
+                logger.warning(
+                    "MCP server binary not found at '%s'. "
+                    "Ping MCP and Send Test Alert will fail. "
+                    "Set MCP_SERVER_COMMAND in .env to the correct absolute path.",
+                    self.mcp_server_command,
+                )
 
 
 settings = Settings()

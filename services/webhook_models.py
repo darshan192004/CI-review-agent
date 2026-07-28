@@ -48,6 +48,7 @@ class WebhookEvent(BaseModel):
     branch: str = ""
     commit_sha: str = ""
     run_id: str = ""
+    run_attempt: str = "1"
     status: str = ""
     author: str = ""
 
@@ -69,9 +70,11 @@ def parse_forgejo_payload(payload: dict[str, Any]) -> WebhookEvent:
         )
 
     run_id = ""
+    run_attempt = "1"
     workflow_data = payload.get("workflow")
     if isinstance(workflow_data, dict):
         run_id = str(workflow_data.get("id", ""))
+        run_attempt = str(workflow_data.get("run_attempt", 1))
     if not run_id:
         run_id = str(payload.get("run_id", ""))
     if not run_id:
@@ -82,6 +85,7 @@ def parse_forgejo_payload(payload: dict[str, Any]) -> WebhookEvent:
         workflow_run = payload.get("workflow_run")
         if isinstance(workflow_run, dict):
             run_id = str(workflow_run.get("id", ""))
+            run_attempt = str(workflow_run.get("run_attempt", 1))
 
     head_sha = payload.get("sha", "")
     if not head_sha:
@@ -112,6 +116,7 @@ def parse_forgejo_payload(payload: dict[str, Any]) -> WebhookEvent:
         branch=branch,
         commit_sha=head_sha,
         run_id=run_id,
+        run_attempt=run_attempt,
         status=status,
         author=sender_data.get("login", ""),
     )
@@ -124,6 +129,7 @@ def _parse_forgejo_action_payload(payload: dict[str, Any]) -> WebhookEvent:
     action = payload.get("action", "")
 
     run_id = str(run.get("id", ""))
+    run_attempt = str(run.get("run_attempt", 1))
     branch = run.get("prettyref", "")
     commit_sha = run.get("commit_sha", "")
     status = run.get("status", "")
@@ -145,6 +151,7 @@ def _parse_forgejo_action_payload(payload: dict[str, Any]) -> WebhookEvent:
         branch=branch,
         commit_sha=commit_sha,
         run_id=run_id,
+        run_attempt=run_attempt,
         status=status,
         author=trigger_user.get("login", ""),
     )
@@ -159,6 +166,7 @@ def parse_github_workflow_run(payload: dict[str, Any]) -> WebhookEvent:
     branch = workflow_run.get("head_branch", "")
     commit_sha = workflow_run.get("head_sha", "")
     run_id = str(workflow_run.get("id", ""))
+    run_attempt = str(workflow_run.get("run_attempt", 1))
     status = workflow_run.get("status", "")
     conclusion = workflow_run.get("conclusion", "")
 
@@ -178,6 +186,7 @@ def parse_github_workflow_run(payload: dict[str, Any]) -> WebhookEvent:
         branch=branch,
         commit_sha=commit_sha,
         run_id=run_id,
+        run_attempt=run_attempt,
         status=status,
         author=sender_data.get("login", ""),
     )

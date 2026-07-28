@@ -13,6 +13,34 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   }
 
+  // SSE Connection Status Tracking (via HTMX SSE extension events)
+  const sseStatus = document.getElementById("sse-status");
+  const webhookHealth = document.getElementById("webhook-health");
+
+  document.body.addEventListener("htmx:sseOpen", function () {
+    if (sseStatus) {
+      sseStatus.textContent = "SSE: connected";
+      sseStatus.className = "text-xs font-mono text-emerald-400";
+    }
+    // Fetch webhook health on SSE connect
+    fetchWebhookHealth();
+    // Trigger full state refresh from DB on reconnection
+    const tableBody = document.getElementById("runs-table-body");
+    if (tableBody) {
+      htmx.trigger(tableBody, "load");
+    }
+  });
+
+  document.body.addEventListener("htmx:sseError", function () {
+    if (sseStatus) {
+      sseStatus.textContent = "SSE: disconnected";
+      sseStatus.className = "text-xs font-mono text-rose-400";
+    }
+  });
+
+  // Refresh webhook health every 30s
+  setInterval(fetchWebhookHealth, 30000);
+
   // HTMX Event Listeners for smooth notifications
   document.body.addEventListener("htmx:afterRequest", function (evt) {
     const xhr = evt.detail.xhr;
@@ -112,4 +140,28 @@ function filterRunsTable() {
     const text = row.textContent.toLowerCase();
     row.style.display = text.includes(filter) ? "" : "none";
   });
+}
+
+function fetchWebhookHealth() {
+  const el = document.getElementById("webhook-health");
+  if (!el) return;
+
+  fetch("/api/webhook-health")
+    .then(r => r.json())
+    .then(data => {
+      const repos = Object.keys(data);
+      if (repos.length === 0) {
+        el.textContent = "";
+        return;
+      }
+      const stale = repos.filter(r => data[r].status === "stale");
+      if (stale.length > 0) {
+        el.textContent = `Webhooks: ${stale.length} stale`;
+        el.className = "text-xs font-mono text-amber-400";
+      } else {
+        el.textContent = "Webhooks: healthy";
+        el.className = "text-xs font-mono text-emerald-400";
+      }
+    })
+    .catch(() => {});
 }

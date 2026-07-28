@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 from typing import Any
@@ -10,28 +9,111 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from config import settings
 from services.ci_client import CIClient, create_ci_client
-from services.git_manager import GitManager
+from services.git_manager import WorkspaceGitManager
 from services.mcp_client import MCPClient
-from state import AgentState, LLMAnalysisResponse
+from state import AgentState, RepairAnalysis
 
 logger = logging.getLogger(__name__)
 
 
 def _get_llm() -> Any:
-    if settings.llm_provider == "anthropic":
+    provider = settings.llm_provider
+
+    if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
         return ChatAnthropic(
             model=settings.anthropic_model,
             api_key=settings.anthropic_api_key,
         )
-    if settings.llm_provider == "gemini":
+
+    if provider == "bedrock":
+        from langchain_aws import ChatBedrock
+
+        return ChatBedrock(
+            model=settings.bedrock_model,
+            region_name=settings.bedrock_region,
+            aws_access_key_id=settings.bedrock_aws_access_key_id or None,
+            aws_secret_access_key=settings.bedrock_aws_secret_access_key or None,
+        )
+
+    if provider == "azure_openai":
+        from langchain_openai import AzureChatOpenAI
+
+        return AzureChatOpenAI(
+            azure_deployment=settings.azure_openai_deployment,
+            api_version=settings.azure_openai_api_version,
+            azure_endpoint=settings.azure_openai_endpoint,
+            api_key=settings.azure_openai_api_key,
+        )
+
+    if provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
         return ChatGoogleGenerativeAI(
             model=settings.gemini_model,
             google_api_key=settings.gemini_api_key,
         )
+
+    if provider == "mistral":
+        from langchain_mistralai import ChatMistralAI
+
+        return ChatMistralAI(
+            model=settings.mistral_model,
+            api_key=settings.mistral_api_key,
+        )
+
+    if provider == "cohere":
+        from langchain_cohere import ChatCohere
+
+        return ChatCohere(
+            model=settings.cohere_model,
+            api_key=settings.cohere_api_key,
+        )
+
+    if provider == "groq":
+        from langchain_groq import ChatGroq
+
+        return ChatGroq(
+            model=settings.groq_model,
+            api_key=settings.groq_api_key,
+        )
+
+    if provider == "together":
+        from langchain_together import ChatTogether
+
+        return ChatTogether(
+            model=settings.together_model,
+            api_key=settings.together_api_key,
+        )
+
+    if provider == "deepseek":
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(
+            model=settings.deepseek_model,
+            api_key=settings.deepseek_api_key,
+            base_url=settings.deepseek_base_url,
+        )
+
+    if provider == "xai":
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(
+            model=settings.xai_model,
+            api_key=settings.xai_api_key,
+            base_url=settings.xai_base_url,
+        )
+
+    if provider == "ollama":
+        from langchain_ollama import ChatOllama
+
+        return ChatOllama(
+            model=settings.ollama_model,
+            base_url=settings.ollama_base_url,
+        )
+
+    # Default: OpenAI
     from langchain_openai import ChatOpenAI
 
     return ChatOpenAI(
@@ -60,6 +142,18 @@ def _build_mcp_client() -> MCPClient | None:
     )
 
 
+def _extract_failure_summary(logs: str) -> str:
+    lines = logs.splitlines()
+    error_lines = [
+        line
+        for line in lines
+        if re.search(r"(ERROR|FAIL|Exception|panic|FATAL)", line, re.IGNORECASE)
+    ]
+    if error_lines:
+        return error_lines[0][:200]
+    return logs[:200] if logs else "Unknown failure"
+
+
 async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
     logger.info("Fetching CI logs for run %s", state.get("run_id"))
     ci_client = _build_ci_client(state)
@@ -79,6 +173,20 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
         head_sha = run_info.get("head_sha", state.get("commit_sha", "unknown"))
 
         failure_summary = _extract_failure_summary(failed_logs)
+
+        # Build repo_info for workspace git manager
+        clone_url = state.get("repo_info", {}).get("clone_url", "")
+        if not clone_url:
+            clone_url = run_info.get("head_repository", {}).get("clone_url", "")
+        token = settings.github_token if state.get("ci_platform") == "github" else settings.forgejo_token
+
+        repo_info = {
+            "name": repo,
+            "clone_url": clone_url,
+            "token": token,
+            "branch": head_branch,
+            "commit_sha": head_sha,
+        }
 
         if mcp_client:
             try:
@@ -109,14 +217,16 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
             "failure_summary": failure_summary,
             "commit_sha": head_sha,
             "branch": head_branch,
+            "repo_info": repo_info,
             "notifications_sent": [f"Initial alert sent for run {run_id}"],
         }
     except Exception as e:
+        redacted = str(e).replace(settings.github_token or "", "[REDACTED]").replace(settings.forgejo_token or "", "[REDACTED]")
         logger.error("Failed to fetch logs: %s", e)
         return {
-            "failed_logs": f"Error fetching logs: {e}",
+            "failed_logs": f"Error fetching logs: {redacted}",
             "attempt_count": 0,
-            "failure_summary": f"Log fetch error: {e}",
+            "failure_summary": f"Log fetch error: {redacted}",
             "notifications_sent": [],
         }
     finally:
@@ -140,19 +250,25 @@ async def node_llm_fix_code(state: AgentState) -> dict[str, Any]:
             "Please try a different approach.\n"
         )
 
-    system_prompt = """You are an expert CI/CD fix agent. Given failing CI logs and source code,
-analyze the root cause and provide a unified diff patch to fix the issue.
-
-Return ONLY valid JSON with this exact structure:
-{
-    "root_cause": "Short summary of why CI failed",
-    "file_path": "path/to/file/to/fix",
-    "unified_diff": "--- a/file.py\\n+++ b/file.py\\n@@ -1,5 +1,5 @@\\n ...",
-    "explanation": "Detailed explanation of the fix"
-}
-
-IMPORTANT: The unified_diff must be a valid unified diff format. Include context lines.
-Only fix the actual issue - do not make unrelated changes."""
+    system_prompt = (
+        "You are an expert CI/CD fix agent. Given failing CI logs and source code, "
+        "analyze the root cause and provide exact file modifications to resolve the issue.\n\n"
+        "Return a JSON object with:\n"
+        '- "explanation": root cause analysis of the CI failure\n'
+        '- "modified_files": list of objects with "file_path" (relative path) and '
+        '"content" (complete updated file content)\n\n'
+        "IMPORTANT: Return COMPLETE file contents, not diffs. Only fix the actual issue.\n\n"
+        "STRICT RULES:\n"
+        "- NEVER modify CI configuration files (.github/workflows/*, .gitlab-ci.yml, Jenkinsfile, etc.)\n"
+        "- NEVER modify Dockerfiles, docker-compose files, or container configs\n"
+        "- NEVER modify .env, .env.local, .env.production, or any secrets files\n"
+        "- NEVER modify dependency manifests (pyproject.toml, package.json, go.mod, Cargo.toml)\n"
+        "- NEVER modify build system files (Makefile, CMakeLists.txt, etc.)\n"
+        "- NEVER modify infrastructure-as-code files (*.tf, *.tfvars, terragrunt.hcl)\n"
+        "- NEVER modify .gitignore or any git-related config files\n"
+        "- Only modify application source code files (.py, .js, .ts, .java, .go, .rs, etc.)\n"
+        "- Keep changes minimal and focused on the root cause of the CI failure"
+    )
 
     user_prompt = f"""Repository: {state.get("repository", "unknown")}
 Branch: {state.get("branch", "unknown")}
@@ -168,70 +284,75 @@ SOURCE CODE:
 Analyze the failure and provide a fix as JSON."""
 
     llm = _get_llm()
+    structured_llm = llm.with_structured_output(RepairAnalysis)
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
 
     try:
-        response = await llm.ainvoke(messages)
-        content = response.content
+        response: RepairAnalysis = await structured_llm.ainvoke(messages)
 
-        json_match = re.search(r"\{[\s\S]*\}", content)
-        if not json_match:
-            raise ValueError("No JSON found in LLM response")
+        repo_info = state.get("repo_info", {})
+        clone_url = repo_info.get("clone_url", "")
+        token = repo_info.get("token", "")
 
-        parsed = json.loads(json_match.group())
-        analysis = LLMAnalysisResponse(**parsed)
-
-        git_manager = GitManager(settings.git_repo_path)
-        await git_manager.reset_clean()
-
-        patch_applied = await git_manager.apply_patch(analysis.unified_diff)
-        if not patch_applied:
-            logger.warning("Patch failed to apply, skipping commit/push")
+        if not clone_url or not token:
+            logger.warning("Missing clone_url or token in repo_info, cannot apply fix")
             return {
-                "llm_analysis": analysis.root_cause,
-                "patch_diff": "",
+                "explanation": response.explanation,
+                "patch_applied": False,
                 "attempt_count": attempt + 1,
-                "notifications_sent": ["Patch failed to apply"],
+                "notifications_sent": ["Missing repo credentials for workspace"],
             }
 
-        commit_msg = f"fix(ci): automated patch attempt {attempt}"
-        commit_sha = await git_manager.commit(commit_msg)
-
-        await git_manager.push(state.get("branch", "main"))
+        success = False
+        with WorkspaceGitManager(
+            clone_url=clone_url,
+            token=token,
+            branch=repo_info.get("branch", state.get("branch", "main")),
+            commit_sha=repo_info.get("commit_sha", state.get("commit_sha", "")),
+            depth=settings.git_clone_depth,
+        ) as git_ws:
+            file_changes = [{"file_path": f.file_path, "content": f.content} for f in response.modified_files]
+            if file_changes and git_ws.apply_file_changes(file_changes):
+                commit_msg = (
+                    f"fix(ci): auto-repair attempt {attempt}\n\n{response.explanation}"
+                )
+                success = git_ws.commit_and_push(commit_msg)
 
         new_run_id = state.get("run_id", "")
-        try:
-            ci_client = _build_ci_client(state)
-            repo = state.get("repository", "")
-            parts = repo.split("/")
-            owner, repo_name = parts[0], parts[1]
-            branch = state.get("branch", "main")
-            await asyncio.sleep(5)
-            runs = await ci_client.list_runs(owner, repo_name, branch)
-            if runs:
-                new_run_id = str(runs[0].get("id", state.get("run_id", "")))
-        except Exception as e:
-            logger.warning("Failed to discover new CI run after push: %s", e)
-        finally:
-            await ci_client.close()
+        if success:
+            try:
+                ci_client = _build_ci_client(state)
+                repo = state.get("repository", "")
+                parts = repo.split("/")
+                owner, repo_name = parts[0], parts[1]
+                branch = state.get("branch", "main")
+                await asyncio.sleep(5)
+                runs = await ci_client.list_runs(owner, repo_name, branch)
+                if runs:
+                    new_run_id = str(runs[0].get("id", state.get("run_id", "")))
+            except Exception as e:
+                logger.warning("Failed to discover new CI run after push: %s", e)
+            finally:
+                await ci_client.close()
 
         return {
-            "llm_analysis": analysis.root_cause,
-            "patch_diff": analysis.unified_diff,
-            "commit_sha": commit_sha,
+            "explanation": response.explanation,
+            "patch_applied": success,
+            "commit_sha": repo_info.get("commit_sha", state.get("commit_sha", "")),
             "run_id": new_run_id,
-            "patch_summary": analysis.explanation,
+            "patch_summary": response.explanation[:200],
             "attempt_count": attempt + 1,
-            "notifications_sent": [f"Patch committed: {commit_sha[:8]}"],
+            "notifications_sent": [f"Patch applied: {success}"],
         }
 
     except Exception as e:
+        redacted = str(e).replace(settings.github_token or "", "[REDACTED]").replace(settings.forgejo_token or "", "[REDACTED]")
         logger.error("LLM fix generation failed: %s", e)
         return {
-            "llm_analysis": f"LLM error: {e}",
-            "patch_diff": "",
+            "explanation": f"LLM error: {redacted}",
+            "patch_applied": False,
             "attempt_count": attempt + 1,
-            "notifications_sent": [f"LLM fix attempt failed: {e}"],
+            "notifications_sent": [f"LLM fix attempt failed: {redacted}"],
         }
 
 
@@ -283,7 +404,7 @@ async def node_notify_success(state: AgentState) -> dict[str, Any]:
                 "resolution_steps": (
                     f"Automated fix applied successfully after {attempt} attempt(s).\n"
                     f"Commit: {state.get('commit_sha', 'N/A')}\n"
-                    f"Patch applied:\n{state.get('patch_diff', 'N/A')[:500]}"
+                    f"Explanation:\n{state.get('explanation', 'N/A')[:500]}"
                 ),
             }
             await mcp_client.send_alert(alert_payload)
@@ -324,7 +445,7 @@ async def node_notify_human_escalation(state: AgentState) -> dict[str, Any]:
                     f"Branch: {state.get('branch', 'N/A')}\n"
                     f"Commit: {state.get('commit_sha', 'N/A')}\n\n"
                     f"Final error:\n{state.get('failed_logs', 'N/A')[:1000]}\n\n"
-                    f"LLM proposed fix:\n{state.get('patch_diff', 'N/A')[:500]}"
+                    f"LLM proposed fix:\n{state.get('explanation', 'N/A')[:500]}"
                 ),
             }
             await mcp_client.send_alert(alert_payload)
@@ -337,15 +458,3 @@ async def node_notify_human_escalation(state: AgentState) -> dict[str, Any]:
     return {
         "notifications_sent": [f"Escalation alert sent after {attempt} failed attempts"]
     }
-
-
-def _extract_failure_summary(logs: str) -> str:
-    lines = logs.splitlines()
-    error_lines = [
-        line
-        for line in lines
-        if re.search(r"(ERROR|FAIL|Exception|panic|FATAL)", line, re.IGNORECASE)
-    ]
-    if error_lines:
-        return error_lines[0][:200]
-    return logs[:200] if logs else "Unknown failure"

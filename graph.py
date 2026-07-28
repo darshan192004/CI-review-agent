@@ -24,6 +24,7 @@ def route_ci_outcome(
 
     attempt = state.get("attempt_count", 1)
     if attempt >= settings.max_retry_attempts:
+        state["ci_status"] = "EXHAUSTED"
         return "notify_human_escalation"
 
     return "fix_code"

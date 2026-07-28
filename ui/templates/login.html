@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Login - CI Review Agent{% endblock %}
+{% block content %}
+<div class="flex items-center justify-center min-h-[60vh]">
+  <div class="w-full max-w-md">
+    <div class="ci-bg-surface ci-border rounded-2xl p-8 shadow-2xl shadow-black/20">
+      <!-- Logo -->
+      <div class="flex justify-center mb-6">
+        <div class="w-12 h-12 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-purple-500 flex items-center justify-center shadow-lg shadow-indigo-500/20 border border-white/10">
+          <svg class="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+          </svg>
+        </div>
+      </div>
+
+      <h1 class="text-xl font-bold text-center ci-text-main mb-1">CI Review Agent</h1>
+      <p class="text-sm text-center ci-text-muted mb-6">Sign in to your account</p>
+
+      {% if error %}
+      <div class="mb-4 p-3 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400 text-sm text-center">
+        {{ error }}
+      </div>
+      {% endif %}
+
+      <form method="POST" action="/login" class="space-y-4">
+        <div>
+          <label for="username" class="block text-sm font-medium ci-text-muted mb-1.5">Username</label>
+          <input
+            type="text"
+            id="username"
+            name="username"
+            required
+            autocomplete="username"
+            autofocus
+            class="w-full px-4 py-2.5 rounded-lg ci-bg-input ci-border text-sm
+                   focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500
+                   placeholder:text-slate-400"
+            placeholder="Enter username"
+          />
+        </div>
+
+        <div>
+          <label for="password" class="block text-sm font-medium ci-text-muted mb-1.5">Password</label>
+          <input
+            type="password"
+            id="password"
+            name="password"
+            required
+            autocomplete="current-password"
+            class="w-full px-4 py-2.5 rounded-lg ci-bg-input ci-border text-sm
+                   focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500
+                   placeholder:text-slate-400"
+            placeholder="Enter password"
+          />
+        </div>
+
+        <button
+          type="submit"
+          class="w-full py-2.5 px-4 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium
+                 transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+        >
+          Sign In
+        </button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

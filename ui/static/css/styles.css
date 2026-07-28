@@ -459,6 +459,7 @@ h1, h2, h3, h4, h5, h6 {
 .ci-bg-surface { background-color: var(--bg-surface); }
 .ci-bg-surface-elevated { background-color: var(--bg-surface-elevated); }
 .ci-bg-card { background-color: var(--bg-card); }
+.ci-bg-input { background-color: #ffffff; color: #0f172a; }
 
 /* Border colors */
 .ci-border { border-color: var(--border-color); }

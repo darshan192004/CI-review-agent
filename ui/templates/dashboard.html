@@ -67,17 +67,25 @@
         <h2 class="font-semibold text-base">Recent Runs</h2>
         <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
       </div>
-      <span class="text-xs ci-text-muted font-mono">Live Instant Sync (1s)</span>
+      <div class="flex items-center gap-2">
+        <span id="sse-status" class="text-xs ci-text-muted font-mono">SSE: connecting...</span>
+        <span id="webhook-health" class="text-xs ci-text-muted font-mono" title="Webhook status per repo"></span>
+      </div>
     </div>
 
-    <!-- HTMX Partial Live Updating Container (every 1s for immediate sync) -->
-    <div hx-get="/api/dashboard/partial" hx-trigger="every 1s, load" hx-swap="innerHTML" id="runs-table-body">
+    <!-- SSE-powered live updates + initial DB load -->
+    <div hx-ext="sse" sse-connect="/api/events" sse-swap="ci_update" hx-swap="beforeend">
+    </div>
+
+    <!-- HTMX Partial Live Updating Container (every 10s for metric sync) -->
+    <div hx-get="/api/dashboard/partial" hx-trigger="every 10s, load" hx-swap="innerHTML" id="runs-table-body">
       {% if recent_runs %}
       <table class="data-table">
         <thead>
           <tr>
             <th>Repository</th>
             <th>Run ID</th>
+            <th>Attempt</th>
             <th>Status</th>
             <th>Platform</th>
             <th>Branch</th>
@@ -90,6 +98,7 @@
           <tr>
             <td class="font-mono text-xs text-indigo-400">{{ run.repository }}</td>
             <td class="font-mono text-xs ci-text-muted">#{{ run.run_id }}</td>
+            <td class="font-mono text-xs ci-text-muted">#{{ run.run_attempt | default('1') }}</td>
             <td>
               {% if run.status == 'AGENT_WORKING' %}
               <span class="badge badge-blue"><span class="status-dot status-dot-pulse bg-blue-400"></span>Agent Working</span>
@@ -99,6 +108,8 @@
               <span class="badge badge-green"><span class="status-dot bg-emerald-400"></span>Passed</span>
               {% elif run.status in ('FAILED', 'failed') %}
               <span class="badge badge-red"><span class="status-dot bg-rose-400"></span>Failed</span>
+              {% elif run.status == 'EXHAUSTED' %}
+              <span class="badge badge-orange"><span class="status-dot bg-amber-400"></span>Exhausted</span>
               {% else %}
               <span class="badge badge-orange">{{ run.status }}</span>
               {% endif %}

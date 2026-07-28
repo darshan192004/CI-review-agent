@@ -20,6 +20,7 @@ dependencies = [
     "uvicorn>=0.32.0",
     "jinja2>=3.1.0",
     "python-multipart>=0.0.18",
+    "bcrypt>=4.0.0",
 ]
 
 [project.scripts]
@@ -31,6 +32,13 @@ dev = [
     "mypy>=1.13.0",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
+]
+llm = [
+    "langchain-aws>=0.2.0",
+    "langchain-mistralai>=0.2.0",
+    "langchain-cohere>=0.3.0",
+    "langchain-groq>=0.2.0",
+    "langchain-together>=0.3.0",
 ]
 
 [tool.ruff]

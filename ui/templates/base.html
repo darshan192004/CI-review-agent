@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}CI Review Agent{% endblock %}</title>
+  <!-- Note: tailwindcss CDN is dynamic/unsigned — SRI not supported by vendor -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -24,6 +25,7 @@
   </script>
   <link rel="stylesheet" href="/static/css/styles.css">
   <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+  <script src="https://unpkg.com/htmx.org@2.0.4/dist/ext/sse.js" defer></script>
   <script src="/static/js/app.js" defer></script>
 </head>
 <body class="min-h-screen flex flex-col">
@@ -61,6 +63,7 @@
           <a href="/" class="nav-link {% if active_page == 'dashboard' %}active{% endif %}">Dashboard</a>
           <a href="/config" class="nav-link {% if active_page == 'config' %}active{% endif %}">Configuration</a>
           <a href="/runs" class="nav-link {% if active_page == 'runs' %}active{% endif %}">Runs</a>
+          <a href="/sync" class="nav-link {% if active_page == 'sync' %}active{% endif %}">Sync</a>
         </nav>
 
         <!-- Theme Switcher Button -->

@@ -1,57 +1,77 @@
-# CI Review Agent - Implementation Checklist
+# Task Checklist: Security Hardening & RBAC
 
-## Phase 0: Core Agent ✅
-- [x] `pyproject.toml` - dependencies
-- [x] `config.py` - Pydantic settings
-- [x] `state.py` - AgentState, enums, models
-- [x] `services/log_parser.py` - ANSI strip, error extraction
-- [x] `services/ci_client.py` - GitHub/Forgejo API client
-- [x] `services/mcp_client.py` - MCP stdio client
-- [x] `services/git_manager.py` - GitPython async wrapper
-- [x] `nodes.py` - 5 graph nodes (fixed payloads)
-- [x] `graph.py` - StateGraph with conditional edges
-- [x] `main.py` - CLI entrypoint
-- [x] Tests: 27 passing (log_parser, graph_routing, notification_payloads)
+## Phase 1: Authentication Foundation
 
-## Phase 1: Webhook Receiver Service
-- [ ] Install dependencies: `fastapi`, `uvicorn`
-- [ ] `services/webhook_models.py` - Forgejo/GitHub payload models
-- [ ] `services/webhook_verify.py` - HMAC signature verification
-- [ ] `services/run_tracker.py` - deduplication with TTL
-- [ ] `server.py` - FastAPI app with webhook endpoints
-- [ ] `services/webhook_handler.py` - background agent runner
-- [ ] Health + status endpoints (`/health`, `/status`)
-- [ ] Update `main.py` with `serve` subcommand
-- [ ] Update `pyproject.toml` with fastapi/uvicorn deps
-- [ ] Tests: webhook_models, webhook_verify, run_tracker
-- [ ] Run full test suite
+- [ ] **Task 1:** Create `services/auth.py` — password hashing, session management, FastAPI dependencies
+  - Files: `services/auth.py` (new), `pyproject.toml`
+  - Scope: S | Depends: None
 
-## Phase 2: Configuration UI
-- [ ] Static file serving + Jinja2 templates
-- [ ] Tailwind CSS + HTMX + Motion via CDN
-- [ ] `templates/base.html` - base template
-- [ ] `templates/dashboard.html` - overview page
-- [ ] `templates/config.html` - settings form
-- [ ] `templates/runs.html` - run history
-- [ ] `GET /api/settings` + `PUT /api/settings`
-- [ ] `POST /api/test/{github,forgejo,mcp,messaging}`
-- [ ] `services/env_writer.py` - safe .env writer
-- [ ] HTMX polling for live updates
-- [ ] Motion animations
+- [ ] **Task 2:** Create login page + `/login` GET/POST + `/logout` POST routes
+  - Files: `ui/templates/login.html` (new), `ui/app.py`
+  - Scope: S | Depends: Task 1
 
-## Phase 3: Distribution
-- [ ] `.env.example` with all variables
-- [ ] `.gitignore`
-- [ ] `Dockerfile` (multi-stage)
-- [ ] `docker-compose.yml`
-- [ ] `setup_wizard.py` (first-run CLI)
-- [ ] Test `pip install` from GitHub
-- [ ] Cross-platform testing (Windows, Linux, macOS)
-- [ ] `README.md`
+- [ ] **Task 3:** Protect all routes with auth dependencies
+  - Files: `ui/app.py`, `server.py`, `tests/test_ui.py`, `tests/test_server.py`
+  - Scope: M | Depends: Tasks 1, 2
 
-## Notes
-- Motion = Framer Motion standalone vanilla JS (no React needed)
-  CDN: `https://cdn.jsdelivr.net/npm/motion@latest/+esm`
-- UI binds to `127.0.0.1` only (localhost, no auth needed)
-- MCP server: `send_alert` tool with 4 required fields
-  (platform, incident_title, root_cause, resolution_steps)
+### Checkpoint: After Phase 1
+- [ ] Unauthenticated `GET /` redirects to `/login`
+- [ ] `PUT /api/settings` as viewer returns 403
+- [ ] All existing tests updated to pass with auth
+
+---
+
+## Phase 2: Security Remediation
+
+- [ ] **Task 4:** LLM output validation + forbidden paths guard + branch isolation
+  - Files: `nodes.py`, `services/git_manager.py`, `tests/test_llm_safety.py` (new)
+  - Scope: M | Depends: None
+
+- [ ] **Task 5:** Mandatory webhook HMAC verification at startup
+  - Files: `server.py`, `tests/test_server.py`
+  - Scope: S | Depends: None
+
+- [ ] **Task 6:** XSS prevention — `html.escape()` on all f-string HTML, fix `showToast`
+  - Files: `server.py`, `ui/app.py`, `ui/static/js/app.js`
+  - Scope: S | Depends: None
+
+- [ ] **Task 7:** SSRF protection + make `mcp_server_command` read-only via API
+  - Files: `services/net_utils.py` (new), `ui/app.py`
+  - Scope: S | Depends: None
+
+- [ ] **Task 8:** Global exception handler + sanitize error responses
+  - Files: `server.py`, `ui/app.py`
+  - Scope: S | Depends: None
+
+- [ ] **Task 9:** Add SRI hashes to CDN scripts + `.env` permission check
+  - Files: `ui/templates/base.html`, `server.py`
+  - Scope: S | Depends: None
+
+### Checkpoint: After Phase 2
+- [ ] Webhooks without signature rejected with 401/403
+- [ ] `<script>alert(1)</script>` in repo name renders as plain text
+- [ ] LLM trying to modify `.env` or `server.py` raises ValueError
+- [ ] SSRF to `169.254.169.254` rejected
+- [ ] API errors return generic messages
+
+---
+
+## Phase 3: Tests & Verification
+
+- [ ] **Task 10:** Update all existing tests, add security tests, run full verification
+  - Files: `tests/test_ui.py`, `tests/test_server.py`, `tests/test_auth.py` (new), `tests/test_llm_safety.py` (new)
+  - Scope: M | Depends: All above
+
+### Final Verification
+- [ ] `python -m pytest tests/ -v` — all pass
+- [ ] Accessing `/` without session -> redirect to `/login`
+- [ ] Viewer viewing dashboard -> works; viewer calling `PUT /api/settings` -> 403
+- [ ] Webhooks without `X-Hub-Signature-256` -> rejected when secret configured
+- [ ] Commit messages with `<script>alert(1)</script>` render as plain text
+- [ ] LLM output modifying `.env` or `auth.py` -> ValueError, commit cancelled
+- [ ] No secrets in source code or git history
+- [ ] All user input validated at system boundaries
+- [ ] Security headers present (CSP, HSTS, etc.)
+- [ ] Error responses don't expose internal details
+- [ ] SSRF to internal services blocked
+- [ ] LLM output validated and encoded before use

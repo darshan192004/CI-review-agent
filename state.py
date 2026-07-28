@@ -16,13 +16,26 @@ class CIStatus(str, Enum):
     FAILED = "FAILED"
     PASSED = "PASSED"
     RUNNING = "RUNNING"
+    EXHAUSTED = "EXHAUSTED"
     UNKNOWN = "UNKNOWN"
 
 
+class FileFix(BaseModel):
+    file_path: str = Field(description="Relative path of the file to update.")
+    content: str = Field(description="The complete updated file content.")
+
+
+class RepairAnalysis(BaseModel):
+    explanation: str = Field(description="Root cause analysis of the CI failure.")
+    modified_files: list[FileFix] = Field(description="List of files to overwrite with corrected content.")
+
+
 class LLMAnalysisResponse(BaseModel):
+    """Legacy compatibility wrapper — maps to RepairAnalysis for existing callers."""
+
     root_cause: str = Field(description="Short summary of why the CI failed")
     file_path: str = Field(description="Path to the file requiring modification")
-    unified_diff: str = Field(description="Unified diff patch to fix the issue")
+    unified_diff: str = Field(description="Unified diff patch to fix the issue (deprecated)")
     explanation: str = Field(description="Detailed explanation of the fix")
 
 
@@ -33,21 +46,28 @@ class AgentState(TypedDict, total=False):
     commit_sha: str
     ci_platform: str
     run_id: str
+    run_attempt: str
 
     # Execution tracking
     attempt_count: int
     ci_status: str
 
-    # Logs and patches
+    # Logs and analysis
     failed_logs: str
     llm_analysis: str
-    patch_diff: str
+
+    # Structured fix output
+    explanation: str
+    patch_applied: bool
 
     # Communication audit
     notifications_sent: Annotated[list[str], operator.add]
 
     # Source code context for LLM
     source_files: dict[str, str]
+
+    # Repo context for workspace git manager
+    repo_info: dict[str, str]
 
     # Internal metadata
     ci_author: str

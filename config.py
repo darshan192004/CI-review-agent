@@ -33,19 +33,41 @@ class Settings(BaseSettings):
     slack_webhook_url: str = ""
     discord_webhook_url: str = ""
 
-    # LLM
+    # LLM — Tier 1 (fully tested)
     openai_api_key: str = ""
     openai_model: str = "gpt-4o"
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-3-7-sonnet-latest"
-    ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "llama3.3"
+    bedrock_aws_access_key_id: str = ""
+    bedrock_aws_secret_access_key: str = ""
+    bedrock_region: str = "us-east-1"
+    bedrock_model: str = "anthropic.claude-3-5-sonnet-20241022-v2:0"
     azure_openai_endpoint: str = ""
     azure_openai_api_key: str = ""
+    azure_openai_api_version: str = "2024-08-01-preview"
     azure_openai_deployment: str = ""
+
+    # LLM — Tier 2 (best-effort)
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.0-flash"
-    llm_provider: str = "openai"  # "openai", "anthropic", "ollama", "azure_openai", "gemini"
+    mistral_api_key: str = ""
+    mistral_model: str = "mistral-large-latest"
+    cohere_api_key: str = ""
+    cohere_model: str = "command-r-plus"
+    groq_api_key: str = ""
+    groq_model: str = "llama-3.3-70b-versatile"
+    together_api_key: str = ""
+    together_model: str = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+    deepseek_api_key: str = ""
+    deepseek_model: str = "deepseek-chat"
+    deepseek_base_url: str = "https://api.deepseek.com"
+    xai_api_key: str = ""
+    xai_model: str = "grok-2"
+    xai_base_url: str = "https://api.x.ai/v1"
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3.3"
+
+    llm_provider: str = "openai"  # openai | anthropic | bedrock | azure_openai | gemini | mistral | cohere | groq | together | deepseek | xai | ollama  # noqa: E501
 
     # Agent Engine Options
     max_retry_attempts: int = 3
@@ -55,6 +77,7 @@ class Settings(BaseSettings):
     checkpointer_type: str = "sqlite"  # "sqlite" or "memory"
     notification_trigger_level: str = "failures_only"  # "always", "failures_only", "success_only", "never"
     auto_create_pull_request: str = "true"  # "true" or "false"
+    auto_fix_reruns: str = "true"  # "true" or "false" — trigger agent auto-fix on rerun webhooks
 
     # Webhook secrets (for signature verification)
     forgejo_webhook_secret: str = ""
@@ -67,6 +90,16 @@ class Settings(BaseSettings):
     # Git
     git_repo_path: str = "."
     git_default_branch: str = "main"
+    git_clone_url: str = ""
+    git_pat_token: str = ""
+    git_clone_depth: int = 1
+
+    # Authentication
+    secret_key: str = ""
+    admin_username: str = ""
+    admin_password: str = ""
+    viewer_username: str = ""
+    viewer_password: str = ""
 
     @property
     def mcp_server_env_with_webhooks(self) -> dict[str, str]:

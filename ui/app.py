@@ -1,15 +1,26 @@
 from __future__ import annotations
 
+import html as html_mod
 import logging
 import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from config import settings
+from services.ci_client import create_ci_client
+from services.auth import (
+    User,
+    _COOKIE_NAME,
+    authenticate_user,
+    create_session,
+    destroy_session,
+    get_current_user,
+    require_admin_role,
+)
 from services.env_writer import read_env_redacted, write_env
 from services.run_tracker import run_tracker
 
@@ -20,6 +31,51 @@ _UI_DIR = Path(__file__).resolve().parent
 router = APIRouter()
 
 templates = Jinja2Templates(directory=str(_UI_DIR / "templates"))
+
+
+# ---------------------------------------------------------------------------
+# Authentication Routes
+# ---------------------------------------------------------------------------
+
+
+@router.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "login.html", {"error": ""})
+
+
+@router.post("/login", response_class=HTMLResponse)
+async def login_submit(request: Request) -> HTMLResponse:
+    form = await request.form()
+    username = str(form.get("username", "")).strip()
+    password = str(form.get("password", ""))
+
+    user = authenticate_user(username, password)
+    if user is None:
+        return templates.TemplateResponse(
+            request, "login.html", {"error": "Invalid credentials"}
+        )
+
+    token = create_session(user)
+    response = RedirectResponse(url="/", status_code=302)
+    response.set_cookie(
+        key=_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=False,
+        samesite="lax",
+        max_age=24 * 60 * 60,
+    )
+    return response
+
+
+@router.post("/logout")
+async def logout(request: Request) -> RedirectResponse:
+    token = request.cookies.get(_COOKIE_NAME)
+    if token:
+        destroy_session(token)
+    response = RedirectResponse(url="/login", status_code=302)
+    response.delete_cookie(key=_COOKIE_NAME)
+    return response
 
 
 def _status_badge(status: str) -> str:
@@ -33,7 +89,7 @@ def _status_badge(status: str) -> str:
         return '<span class="badge badge-red"><span class="status-dot bg-rose-400"></span>Failed</span>'
     if status == "error":
         return '<span class="badge badge-orange"><span class="status-dot bg-amber-400"></span>Error</span>'
-    return f'<span class="badge badge-purple">{status}</span>'
+    return f'<span class="badge badge-purple">{html_mod.escape(status)}</span>'
 
 
 def _format_uptime(seconds: float) -> str:
@@ -87,6 +143,7 @@ def _get_settings() -> Any:
         "checkpointer_type",
         "notification_trigger_level",
         "auto_create_pull_request",
+        "auto_fix_reruns",
         "git_repo_path",
         "git_default_branch",
     ]:
@@ -100,7 +157,7 @@ def _get_settings() -> Any:
 
 
 @router.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request) -> HTMLResponse:
+async def dashboard(request: Request, _user: User = Depends(get_current_user)) -> HTMLResponse:
     counts = await run_tracker.count_by_status()
     recent = await run_tracker.get_all_runs()
     recent = recent[-10:]
@@ -122,6 +179,7 @@ async def dashboard(request: Request) -> HTMLResponse:
                 {
                     "repository": r["repository"],
                     "run_id": r["run_id"],
+                    "run_attempt": r.get("run_attempt", "1"),
                     "status": r["status"],
                     "platform": r.get("platform", ""),
                     "branch": r.get("branch", ""),
@@ -138,7 +196,7 @@ async def dashboard(request: Request) -> HTMLResponse:
 
 
 @router.get("/config", response_class=HTMLResponse)
-async def config_page(request: Request) -> HTMLResponse:
+async def config_page(request: Request, _user: User = Depends(get_current_user)) -> HTMLResponse:
     return templates.TemplateResponse(
         request,
         "config.html",
@@ -154,6 +212,7 @@ async def runs_page(
     request: Request,
     status: str = Query("", alias="status"),
     platform: str = Query("", alias="platform"),
+    _user: User = Depends(get_current_user),
 ) -> HTMLResponse:
     all_runs = await run_tracker.get_all_runs()
     all_runs.reverse()
@@ -167,6 +226,7 @@ async def runs_page(
         {
             "repository": r["repository"],
             "run_id": r["run_id"],
+            "run_attempt": r.get("run_attempt", "1"),
             "status": r["status"],
             "platform": r.get("platform", ""),
             "branch": r.get("branch", ""),
@@ -185,13 +245,24 @@ async def runs_page(
     )
 
 
+@router.get("/sync", response_class=HTMLResponse)
+async def sync_page(request: Request, _user: User = Depends(require_admin_role)) -> HTMLResponse:
+    recent = await run_tracker.get_all_runs()
+    recent.reverse()
+    return templates.TemplateResponse(
+        request,
+        "sync.html",
+        {"active_page": "sync", "recent_runs": recent[:50]},
+    )
+
+
 # ---------------------------------------------------------------------------
 # HTMX partial: dashboard live poll (Out-Of-Band Metric Syncing)
 # ---------------------------------------------------------------------------
 
 
 @router.get("/api/dashboard/partial", response_class=HTMLResponse)
-async def dashboard_partial() -> HTMLResponse:
+async def dashboard_partial(_user: User = Depends(get_current_user)) -> HTMLResponse:
     counts = await run_tracker.count_by_status()
     recent = await run_tracker.get_all_runs()
     recent = recent[-10:]
@@ -203,16 +274,18 @@ async def dashboard_partial() -> HTMLResponse:
     failed_cnt = counts.get("FAILED", 0) + counts.get("failed", 0) + counts.get("error", 0)
 
     rows = ""
+    e = html_mod.escape
     for run in recent:
-        commit_short = run.get("commit_sha", "")[:8] if run.get("commit_sha") else "—"
+        commit_short = e(run.get("commit_sha", "")[:8]) if run.get("commit_sha") else "\u2014"
         rows += f"""<tr>
-            <td class="font-mono text-xs text-indigo-400">{run["repository"]}</td>
-            <td class="font-mono text-xs text-slate-400">#{run["run_id"]}</td>
+            <td class="font-mono text-xs text-indigo-400">{e(run["repository"])}</td>
+            <td class="font-mono text-xs text-slate-400">#{e(run["run_id"])}</td>
+            <td class="font-mono text-xs text-slate-400">#{e(run.get("run_attempt", "1"))}</td>
             <td>{_status_badge(run["status"])}</td>
-            <td class="text-xs text-slate-400 uppercase font-mono">{run.get("platform", "—")}</td>
-            <td class="text-xs text-slate-400">{run.get("branch", "—")}</td>
+            <td class="text-xs text-slate-400 uppercase font-mono">{e(run.get("platform", "\u2014"))}</td>
+            <td class="text-xs text-slate-400">{e(run.get("branch", "\u2014"))}</td>
             <td class="text-xs text-slate-400 font-mono">{commit_short}</td>
-            <td class="text-xs text-slate-400">{run.get("author", "—")}</td>
+            <td class="text-xs text-slate-400">{e(run.get("author", "\u2014"))}</td>
         </tr>"""
 
     html = f"""
@@ -228,6 +301,7 @@ async def dashboard_partial() -> HTMLResponse:
         <tr>
           <th>Repository</th>
           <th>Run ID</th>
+          <th>Attempt</th>
           <th>Status</th>
           <th>Platform</th>
           <th>Branch</th>
@@ -236,7 +310,7 @@ async def dashboard_partial() -> HTMLResponse:
         </tr>
       </thead>
       <tbody>
-        {rows if rows else '<tr><td colspan="7" class="p-12 text-center text-slate-400 text-sm">'
+        {rows if rows else '<tr><td colspan="8" class="p-12 text-center text-slate-400 text-sm">'
                 'No webhook runs recorded yet.</td></tr>'}
       </tbody>
     </table>"""
@@ -250,12 +324,12 @@ async def dashboard_partial() -> HTMLResponse:
 
 
 @router.get("/api/settings")
-async def get_settings() -> dict[str, str]:
+async def get_settings(_user: User = Depends(get_current_user)) -> dict[str, str]:
     return read_env_redacted()
 
 
 @router.put("/api/settings")
-async def update_settings(request: Request) -> JSONResponse:
+async def update_settings(request: Request, _user: User = Depends(require_admin_role)) -> JSONResponse:
     body: dict[str, Any] = {}
     content_type = request.headers.get("content-type", "")
 
@@ -301,6 +375,7 @@ async def update_settings(request: Request) -> JSONResponse:
         "checkpointer_type",
         "notification_trigger_level",
         "auto_create_pull_request",
+        "auto_fix_reruns",
         "git_repo_path",
         "git_default_branch",
         "server_host",
@@ -330,7 +405,7 @@ async def update_settings(request: Request) -> JSONResponse:
 
 
 @router.post("/api/trigger-test-run")
-async def trigger_test_run() -> JSONResponse:
+async def trigger_test_run(_user: User = Depends(require_admin_role)) -> JSONResponse:
     import random
     run_id = str(random.randint(1000, 9999))
     repo = "owner/ci-test-repo"
@@ -346,8 +421,118 @@ async def trigger_test_run() -> JSONResponse:
     return JSONResponse(content={"ok": True, "run_id": run_id, "repository": repo})
 
 
+def _map_forgejo_status(status: str) -> str:
+    return {
+        "success": "PASSED",
+        "failure": "FAILED",
+        "running": "RUNNING",
+        "waiting": "processing",
+        "cancelled": "error",
+        "skipped": "error",
+    }.get(status, "processing")
+
+
+@router.post("/api/sync-runs")
+async def sync_runs(request: Request, _user: User = Depends(require_admin_role)) -> JSONResponse:
+    body: dict[str, Any] = {}
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+    elif "application/x-www-form-urlencoded" in content_type:
+        form = await request.form()
+        body = dict(form)
+
+    repo = body.get("repo", "").strip()
+    branch = body.get("branch", "main").strip()
+    limit = min(int(body.get("limit", 20)), 50)
+    continuous = body.get("continuous", "true").lower() == "true"
+
+    if "/" not in repo:
+        raise HTTPException(status_code=400, detail="repo must be in owner/repo format")
+
+    owner, repo_name = repo.split("/", 1)
+    ci_client = create_ci_client("forgejo", settings.forgejo_token, settings.forgejo_base_url)
+
+    try:
+        runs = await ci_client.list_runs(owner, repo_name, branch, limit)
+        synced = 0
+        for run in runs:
+            status = _map_forgejo_status(run.get("status", ""))
+            actor = run.get("trigger_user") or run.get("actor") or {}
+            await run_tracker.record(
+                repository=repo,
+                run_id=str(run.get("id", "")),
+                run_attempt="1",
+                status=status,
+                platform="forgejo",
+                branch=run.get("prettyref", branch),
+                commit_sha=run.get("commit_sha", ""),
+                author=actor.get("login", "unknown") if isinstance(actor, dict) else str(actor),
+            )
+            synced += 1
+
+        # Start continuous sync if requested
+        sync_started = False
+        if continuous:
+            from services.continuous_sync import start_continuous_sync
+            sync_started = start_continuous_sync(repo, branch)
+
+        return JSONResponse(content={
+            "synced": synced,
+            "repo": repo,
+            "branch": branch,
+            "continuous_sync": sync_started,
+        })
+    except Exception as e:
+        logger.error("Sync failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"Failed to sync from Forgejo: {e}")
+    finally:
+        await ci_client.close()
+
+
+@router.post("/api/clear-history")
+async def clear_history(_user: User = Depends(require_admin_role)) -> JSONResponse:
+    await run_tracker.clear()
+    return JSONResponse(content={"ok": True, "message": "History cleared"})
+
+
+@router.get("/api/sync-status")
+async def get_sync_status(_user: User = Depends(get_current_user)) -> JSONResponse:
+    """Get status of active continuous sync tasks."""
+    from services.continuous_sync import get_active_sync_tasks
+    return JSONResponse(content={"tasks": get_active_sync_tasks()})
+
+
+@router.post("/api/stop-sync")
+async def stop_sync(request: Request, _user: User = Depends(require_admin_role)) -> JSONResponse:
+    """Stop continuous sync for a repo."""
+    from services.continuous_sync import stop_continuous_sync
+    body: dict[str, Any] = {}
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+        except Exception:
+            pass
+    elif "application/x-www-form-urlencoded" in content_type:
+        form = await request.form()
+        body = dict(form)
+
+    repo = body.get("repo", "").strip()
+    branch = body.get("branch", "main").strip()
+
+    if not repo:
+        raise HTTPException(status_code=400, detail="repo is required")
+
+    stopped = stop_continuous_sync(repo, branch)
+    return JSONResponse(content={"stopped": stopped, "repo": repo})
+
+
 @router.post("/api/test/ollama")
-async def test_ollama() -> JSONResponse:
+async def test_ollama(_user: User = Depends(require_admin_role)) -> JSONResponse:
     import httpx
 
     base = settings.ollama_base_url.rstrip("/")
@@ -370,7 +555,7 @@ async def test_ollama() -> JSONResponse:
 
 
 @router.post("/api/test/github")
-async def test_github() -> JSONResponse:
+async def test_github(_user: User = Depends(require_admin_role)) -> JSONResponse:
     import httpx
 
     if not settings.github_token:
@@ -394,7 +579,7 @@ async def test_github() -> JSONResponse:
 
 
 @router.post("/api/test/forgejo")
-async def test_forgejo() -> JSONResponse:
+async def test_forgejo(_user: User = Depends(require_admin_role)) -> JSONResponse:
     import httpx
 
     token = settings.forgejo_token
@@ -422,7 +607,7 @@ async def test_forgejo() -> JSONResponse:
 
 
 @router.post("/api/test/mcp")
-async def test_mcp() -> JSONResponse:
+async def test_mcp(_user: User = Depends(require_admin_role)) -> JSONResponse:
     import asyncio
     import json
     import os
@@ -483,7 +668,7 @@ async def test_mcp() -> JSONResponse:
 
 
 @router.post("/api/test/messaging")
-async def test_messaging() -> JSONResponse:
+async def test_messaging(_user: User = Depends(require_admin_role)) -> JSONResponse:
     import asyncio
     import json
     import os

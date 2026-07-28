@@ -3,15 +3,32 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 
 from fastapi.testclient import TestClient
 
+WEBHOOK_SECRET = "ci-agent-webhook-secret-2026"
+
+# Set env vars before importing server
+os.environ["GITHUB_WEBHOOK_SECRET"] = WEBHOOK_SECRET
+os.environ["FORGEJO_WEBHOOK_SECRET"] = WEBHOOK_SECRET
+os.environ.setdefault("ADMIN_USERNAME", "admin")
+os.environ.setdefault("ADMIN_PASSWORD", "testpass")
+
+# Reload settings to pick up the env vars
+from config import Settings, settings
+
+_settings_dict = settings.model_dump()
+_settings_dict["github_webhook_secret"] = WEBHOOK_SECRET
+_settings_dict["forgejo_webhook_secret"] = WEBHOOK_SECRET
+
+# Update the singleton in-place
+for k, v in _settings_dict.items():
+    object.__setattr__(settings, k, v)
+
 from server import app
 
-
 client = TestClient(app)
-
-WEBHOOK_SECRET = "ci-agent-webhook-secret-2026"
 
 
 def _forgejo_signature(payload: dict) -> str:

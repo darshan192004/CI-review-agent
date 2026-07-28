@@ -44,6 +44,7 @@
         <tr>
           <th>Repository</th>
           <th>Run ID</th>
+          <th>Attempt</th>
           <th>Status</th>
           <th>Platform</th>
           <th>Branch</th>
@@ -58,6 +59,7 @@
         <tr>
           <td class="font-mono text-xs font-semibold text-indigo-400">{{ run.repository }}</td>
           <td class="font-mono text-xs text-slate-400">#{{ run.run_id }}</td>
+          <td class="font-mono text-xs text-slate-400">#{{ run.run_attempt | default('1') }}</td>
           <td>
             {% if run.status == 'AGENT_WORKING' %}
             <span class="badge badge-blue"><span class="status-dot status-dot-pulse bg-blue-400"></span>Agent Working</span>

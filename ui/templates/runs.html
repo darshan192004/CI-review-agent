@@ -3,7 +3,9 @@
 {% block content %}
 <style>
   html { scrollbar-width: none; -ms-overflow-style: none; }
-  html::-webkit-scrollbar { display: none; }
+  html::-webkit-scrollbar { display: none; width: 0; }
+  #runs-container { scrollbar-width: none; -ms-overflow-style: none; }
+  #runs-container::-webkit-scrollbar { display: none; width: 0; }
 </style>
 <div class="space-y-6 max-w-6xl mx-auto">
   
@@ -41,7 +43,7 @@
   </div>
 
   <!-- Runs Container -->
-  <div id="runs-container" class="glass-panel max-h-[600px] overflow-y-auto overflow-x-hidden scrollbar-none">
+  <div id="runs-container" class="glass-panel max-h-[600px] overflow-y-auto overflow-x-hidden">
     {% if runs %}
     <table class="data-table">
       <thead>

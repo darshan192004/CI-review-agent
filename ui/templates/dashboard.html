@@ -91,7 +91,7 @@
     </div>
 
     <!-- Initial state container — no HTMX poll, no SSE extension -->
-    <div id="runs-table-body">
+    <div id="runs-table-body" class="max-h-[500px] overflow-y-auto scrollbar-none">
       {% if recent_runs %}
       <table class="data-table">
         <thead>

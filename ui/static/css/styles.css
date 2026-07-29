@@ -465,6 +465,15 @@ h1, h2, h3, h4, h5, h6 {
 .ci-border { border-color: var(--border-color); }
 .ci-border-hover { border-color: var(--border-color-hover); }
 
+/* Scrollbar hiding — keeps scrolling functional, hides the track */
+.scrollbar-none {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+    display: none;
+}
+
 /* Gradient backgrounds for sub-panels (used in config cards) */
 .ci-panel-bg {
   background: var(--bg-surface);

@@ -23,12 +23,24 @@ class TestRunTracker:
 
     @pytest.mark.asyncio
     async def test_record_and_duplicate(self) -> None:
-        await self.tracker.record("owner/repo", "123")
+        await self.tracker.record("owner/repo", "123", status="PASSED")
         assert await self.tracker.is_duplicate("owner/repo", "123") is True
 
     @pytest.mark.asyncio
+    async def test_processing_not_duplicate(self) -> None:
+        """A run synced with 'processing' status should NOT block a webhook."""
+        await self.tracker.record("owner/repo", "123", status="processing")
+        assert await self.tracker.is_duplicate("owner/repo", "123") is False
+
+    @pytest.mark.asyncio
+    async def test_failed_not_duplicate(self) -> None:
+        """A run synced with 'FAILED' status should NOT block a webhook."""
+        await self.tracker.record("owner/repo", "123", status="FAILED")
+        assert await self.tracker.is_duplicate("owner/repo", "123") is False
+
+    @pytest.mark.asyncio
     async def test_different_runs_not_duplicates(self) -> None:
-        await self.tracker.record("owner/repo", "123")
+        await self.tracker.record("owner/repo", "123", status="PASSED")
         assert await self.tracker.is_duplicate("owner/repo", "456") is False
 
     @pytest.mark.asyncio

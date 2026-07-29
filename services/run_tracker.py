@@ -77,15 +77,12 @@ class RunTracker:
     async def is_duplicate(
         self, repository: str, run_id: str, run_attempt: str = "1"
     ) -> bool:
-        async with aiosqlite.connect(_DB_PATH) as db:
-            await _init_db(_DB_PATH)
-            await self._evict_expired(db)
-            async with db.execute(
-                "SELECT 1 FROM ci_runs WHERE repository = ? AND run_id = ? AND run_attempt = ?",
-                (repository, run_id, run_attempt),
-            ) as cursor:
-                row = await cursor.fetchone()
-                return row is not None
+        status = await self.get_run_status(repository, run_id, run_attempt)
+        if status is None:
+            return False
+        return status in (
+            "PASSED", "EXHAUSTED", "AGENT_WORKING", "error", "success",
+        )
 
     async def get_run_status(
         self, repository: str, run_id: str, run_attempt: str = "1"

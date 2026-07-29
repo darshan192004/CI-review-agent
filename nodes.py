@@ -178,6 +178,8 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
         clone_url = state.get("repo_info", {}).get("clone_url", "")
         if not clone_url:
             clone_url = run_info.get("head_repository", {}).get("clone_url", "")
+        if not clone_url and settings.forgejo_base_url:
+            clone_url = f"{settings.forgejo_base_url.rstrip('/')}/{owner}/{repo_name}.git"
         token = settings.github_token if state.get("ci_platform") == "github" else settings.forgejo_token
 
         repo_info = {

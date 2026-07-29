@@ -281,16 +281,24 @@ class RunTracker:
                 rows = await cursor.fetchall()
         return [self._row_to_dict(row) for row in rows]
 
-    async def count_by_status(self) -> dict[str, int]:
+    async def count_by_status(self, repo: str = "") -> dict[str, int]:
         async with aiosqlite.connect(_DB_PATH) as db:
             await _init_db(_DB_PATH)
             await self._evict_expired(db)
             counts: dict[str, int] = {}
-            async with db.execute(
-                "SELECT status, COUNT(*) FROM ci_runs GROUP BY status"
-            ) as cursor:
-                async for row in cursor:
-                    counts[row[0]] = row[1]
+            if repo:
+                async with db.execute(
+                    "SELECT status, COUNT(*) FROM ci_runs WHERE repository = ? GROUP BY status",
+                    (repo,),
+                ) as cursor:
+                    async for row in cursor:
+                        counts[row[0]] = row[1]
+            else:
+                async with db.execute(
+                    "SELECT status, COUNT(*) FROM ci_runs GROUP BY status"
+                ) as cursor:
+                    async for row in cursor:
+                        counts[row[0]] = row[1]
             return counts
 
     async def clear(self) -> None:

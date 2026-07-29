@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -166,11 +166,14 @@ async def get_webhook_health() -> dict:
 
 
 @app.get("/api/events")
-async def sse_endpoint(request: Request) -> StreamingResponse:
+async def sse_endpoint(request: Request, repo: str = Query("")) -> StreamingResponse:
     """Streams real-time CI run updates via Server-Sent Events."""
 
-    async def _metrics_snapshot() -> str:
-        counts = await run_tracker.count_by_status()
+    async def _metrics_snapshot(filter_repo: str = "") -> str:
+        if filter_repo:
+            counts = await run_tracker.count_by_status(repo=filter_repo)
+        else:
+            counts = await run_tracker.count_by_status()
         active = counts.get("processing", 0) + counts.get("AGENT_WORKING", 0)
         success = counts.get("PASSED", 0) + counts.get("success", 0)
         failed = counts.get("FAILED", 0) + counts.get("failed", 0) + counts.get("error", 0)
@@ -191,7 +194,7 @@ async def sse_endpoint(request: Request) -> StreamingResponse:
             try:
                 event_data = await asyncio.wait_for(sse_event_bus.get(), timeout=1.0)
             except TimeoutError:
-                yield await _metrics_snapshot()
+                yield await _metrics_snapshot(filter_repo=repo)
                 continue
 
             meta = event_data.get("meta", {})
@@ -211,7 +214,7 @@ async def sse_endpoint(request: Request) -> StreamingResponse:
             payload = json.dumps({"html": html_row, "task_key": event_data["task_key"], "status": event_data["status"]})
             yield f"event: ci_update\ndata: {payload}\n\n"
             # Also push a metrics snapshot after each CI event
-            yield await _metrics_snapshot()
+            yield await _metrics_snapshot(filter_repo=repo)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

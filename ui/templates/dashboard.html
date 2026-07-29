@@ -163,7 +163,29 @@
       }
     }
 
-    select.addEventListener('change', updateDot);
+    select.addEventListener('change', function() {
+      updateDot();
+      // Reconnect SSE with new repo filter
+      es.close();
+      var repo = select.value;
+      var url = '/api/events' + (repo ? '?repo=' + encodeURIComponent(repo) : '');
+      es = new EventSource(url);
+      es.addEventListener('open', function() {
+        if (sseStatus) {
+          sseStatus.textContent = 'SSE: connected';
+          sseStatus.className = 'text-xs font-mono text-emerald-400';
+        }
+        if (typeof fetchWebhookHealth === 'function') fetchWebhookHealth();
+      });
+      es.addEventListener('error', function() {
+        if (sseStatus) {
+          sseStatus.textContent = 'SSE: disconnected';
+          sseStatus.className = 'text-xs font-mono text-rose-400';
+        }
+      });
+      es.addEventListener('ci_update', handleCiUpdate);
+      es.addEventListener('metrics_update', handleMetricsUpdate);
+    });
 
     function setRepoError(msg) {
       var label = document.querySelector('label[for="repo-select"]');
@@ -221,7 +243,7 @@
       }
     });
 
-    es.addEventListener('ci_update', function(e) {
+    function handleCiUpdate(e) {
       var data = JSON.parse(e.data);
       var container = document.getElementById('runs-table-body');
       if (!container) return;
@@ -232,18 +254,16 @@
       if (existing) {
         existing.outerHTML = data.html;
       } else {
-        // New row — look for tbody or replace empty state
         var tbody = container.querySelector('tbody');
         if (tbody) {
           tbody.insertAdjacentHTML('afterbegin', data.html);
         } else {
-          // Replace empty state with a table
           container.innerHTML = '<table class="data-table"><thead><tr><th>Repository</th><th>Run ID</th><th>Attempt</th><th>Status</th><th>Platform</th><th>Branch</th><th>Commit</th><th>Author</th></tr></thead><tbody>' + data.html + '</tbody></table>';
         }
       }
-    });
+    }
 
-    es.addEventListener('metrics_update', function(e) {
+    function handleMetricsUpdate(e) {
       var data = JSON.parse(e.data);
       var el;
       el = document.getElementById('metric-active');
@@ -254,7 +274,10 @@
       if (el) el.textContent = data.failed;
       el = document.getElementById('metric-uptime');
       if (el) el.textContent = data.uptime;
-    });
+    }
+
+    es.addEventListener('ci_update', handleCiUpdate);
+    es.addEventListener('metrics_update', handleMetricsUpdate);
 
     // Periodic full-state refresh as fallback (every 5 min)
     setInterval(function() {

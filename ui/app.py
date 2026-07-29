@@ -281,7 +281,6 @@ async def dashboard_partial(
         success_cnt = sum(1 for r in recent if r["status"] in ("PASSED", "success"))
         failed_cnt = sum(1 for r in recent if r["status"] in ("FAILED", "failed", "error", "EXHAUSTED"))
     else:
-        recent = recent[:10]
         active_cnt = counts.get("processing", 0) + counts.get("AGENT_WORKING", 0)
         success_cnt = counts.get("PASSED", 0) + counts.get("success", 0)
         failed_cnt = counts.get("FAILED", 0) + counts.get("failed", 0) + counts.get("error", 0)

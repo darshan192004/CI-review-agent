@@ -53,6 +53,9 @@ class CIClient(abc.ABC):
         self, owner: str, repo: str, branch: str, limit: int = 1
     ) -> list[dict[str, Any]]: ...
 
+    @abc.abstractmethod
+    async def list_repos(self, org: str) -> list[str]: ...
+
 
 class GitHubCIClient(CIClient):
     def _headers(self) -> dict[str, str]:
@@ -146,6 +149,14 @@ class GitHubCIClient(CIClient):
         resp.raise_for_status()
         return resp.json().get("workflow_runs", [])
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    async def list_repos(self, org: str) -> list[str]:
+        url = f"{self.base_url}/orgs/{org}/repos"
+        params = {"per_page": 100, "type": "all"}
+        resp = await self._client.get(url, headers=self._headers(), params=params)
+        resp.raise_for_status()
+        return [r["full_name"] for r in resp.json()]
+
 
 class ForgejoCIClient(CIClient):
     def _headers(self) -> dict[str, str]:
@@ -237,6 +248,23 @@ class ForgejoCIClient(CIClient):
         resp = await self._client.get(url, headers=self._headers(), params=params)
         resp.raise_for_status()
         return resp.json().get("workflow_runs", [])
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    async def list_repos(self, org: str) -> list[str]:
+        try:
+            url = f"{self.base_url}/api/v1/orgs/{org}/repos"
+            params = {"limit": 100}
+            resp = await self._client.get(url, headers=self._headers(), params=params)
+            resp.raise_for_status()
+            return [r["full_name"] for r in resp.json()]
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code != 404:
+                raise
+        url = f"{self.base_url}/api/v1/users/{org}/repos"
+        params = {"limit": 100}
+        resp = await self._client.get(url, headers=self._headers(), params=params)
+        resp.raise_for_status()
+        return [r["full_name"] for r in resp.json()]
 
 
 def create_ci_client(platform: str, token: str, base_url: str) -> CIClient:

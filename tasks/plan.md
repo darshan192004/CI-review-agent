@@ -1,213 +1,76 @@
-# Implementation Plan: Full Security Hardening & RBAC
+# Implementation Plan: Single-Page CI Dashboard with Auto-Discovery
 
 ## Overview
 
-Complete security overhaul of CI Review Agent: authentication with RBAC (admin/viewer), mandatory webhook verification, XSS prevention, LLM output validation, SSRF protection, and CDN hardening. The codebase currently has zero authentication, optional webhook verification, and multiple XSS/injection vectors.
+Merge Dashboard / Runs / Sync into a single page with a repo dropdown at the top. Repos with broken CI (last run failed or agent EXHAUSTED) float to the top with a colored status dot. On server startup, auto-backfill the last 50 runs per repo. Live updates via SSE — no polling.
 
 ## Architecture Decisions
 
-1. **Session tokens via HTTP-only cookies** using `secrets.token_urlsafe(32)` with in-memory session store
-2. **Credentials via `.env` only** - `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `VIEWER_USERNAME`, `VIEWER_PASSWORD`, `SECRET_KEY`
-3. **FastAPI dependencies** for auth - `get_current_user` and `require_admin_role` injected per-route
-4. **Forbidden paths guard** - block LLM from modifying `.env*`, `.github/`, `Dockerfile`, `server.py`, `services/auth.py`
-5. **Branch isolation** - LLM fixes push to `autofix/ci-run-<run_id>`, never to default branch
-6. **`html.escape()` everywhere** for f-string HTML construction
-7. **`passlib[bcrypt]`** for password hashing
+- **Repo status query**: Add `get_repo_status_summary()` to `RunTracker` that returns latest run status per repo via a single GROUP BY query — no N+1 per-repo lookups.
+- **Filter by repo**: `dashboard_partial` already returns HTML. Adding `?repo=` filtering is a one-line SQL change (WHERE clause) — no new endpoint needed.
+- **Backfill on startup**: Use `asyncio.gather` with a semaphore of 5 in the lifespan, calling `_continuous_sync_loop`-style logic for each discovered repo. Reuse `discover_repos()` and `list_runs()`.
+- **UI state**: The repo dropdown is populated on page load via `hx-get="/api/repos"`. Selecting a repo triggers `hx-get="/api/dashboard/partial?repo=..."` to filter the table + metrics.
+- **Nav cleanup**: Sync link removed from `base.html` nav. The `/sync` page still works via direct URL.
+
+## Task List
+
+### Phase 1: Backend API (Foundation)
+
+- [ ] Task 1: Add `GET /api/repos` endpoint — discover repos, sort broken-first, return with status dots
+- [ ] Task 2: Add `?repo=` filter to `dashboard_partial` — filter runs + metrics per repo
+
+### Checkpoint: Backend API
+- [ ] `GET /api/repos` returns sorted repo list with correct dot colors
+- [ ] `GET /api/dashboard/partial?repo=owner/repo` filters to that repo's runs only
+- [ ] All existing tests pass
+- [ ] New tests cover both endpoints
+
+### Phase 2: Frontend Dashboard
+
+- [ ] Task 3: Rewrite `dashboard.html` with repo dropdown, status dots, and filtered view
+
+### Checkpoint: Dashboard UI
+- [ ] Dashboard loads with repo dropdown populated from `/api/repos`
+- [ ] Selecting a repo filters the table and metrics
+- [ ] SSE live updates still work after filtering
+- [ ] Manual test with browser
+
+### Phase 3: Startup & Navigation
+
+- [ ] Task 4: Add startup backfill in server lifespan (50 runs/repo, semaphore=5)
+- [ ] Task 5: Hide sync page from navigation
+
+### Checkpoint: Complete
+- [ ] All acceptance criteria met
+- [ ] All tests pass
+- [ ] Lint and typecheck pass
+- [ ] Manual smoke test: startup → dashboard shows backfilled data → dropdown filters work
 
 ## Dependency Graph
 
 ```
-Task 1: Auth Engine (services/auth.py)         [FOUNDATION]
-    |
-    +-- Task 2: Login/Logout UI & Routes        [depends on 1]
-    |       |
-    |       +-- Task 3: Protect All Routes      [depends on 2]
-    |
-    +-- Task 5: Mandatory Webhook Verification  [depends on 1]
-    |
-Task 4: LLM Safety & Branch Isolation           [independent]
-Task 6: XSS Prevention                          [independent]
-Task 7: SSRF & Command Injection                [independent]
-Task 8: Error Sanitization                      [independent]
-Task 9: CDN SRI & .env Hardening                [independent]
+Task 1 (GET /api/repos)
+    └── Task 3 (dashboard UI dropdown — consumes /api/repos)
 
-Task 10: Tests & Verification                   [depends on all]
+Task 2 (partial filter)
+    └── Task 3 (dashboard UI filter — consumes ?repo= param)
+
+Task 4 (startup backfill) — independent of UI changes
+Task 5 (nav cleanup) — independent of logic changes
 ```
 
-## Task List
-
-### Phase 1: Authentication Foundation
-- [ ] Task 1: Create `services/auth.py`
-- [ ] Task 2: Create login page + routes
-- [ ] Task 3: Protect all routes
-
-### Phase 2: Security Remediation
-- [ ] Task 4: LLM safety & branch isolation
-- [ ] Task 5: Mandatory webhook verification
-- [ ] Task 6: XSS prevention
-- [ ] Task 7: SSRF & command injection
-- [ ] Task 8: Error sanitization
-- [ ] Task 9: CDN SRI & .env hardening
-
-### Phase 3: Tests & Verification
-- [ ] Task 10: Update tests, run verification
-
-## Detailed Task Specifications
-
-### Task 1: Auth Engine (services/auth.py)
-
-**Description:** Create the authentication module with password hashing, session token management, and FastAPI dependency functions.
-
-**Acceptance criteria:**
-- [ ] Exports: `hash_password()`, `verify_password()`, `create_session()`, `validate_session()`, `get_current_user`, `require_admin_role`, `User` dataclass
-- [ ] Passwords hashed with `passlib[bcrypt]`, salt rounds >= 12
-- [ ] Session tokens: `secrets.token_urlsafe(32)`, in-memory dict with TTL (default 24h)
-- [ ] `get_current_user`: reads `session_token` cookie; returns `User` or 401 (with `HX-Redirect: /login` for HTMX)
-- [ ] `require_admin_role`: raises 403 if role != "admin"
-- [ ] Credentials from env: `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `VIEWER_USERNAME`, `VIEWER_PASSWORD`, `SECRET_KEY`
-- [ ] No hardcoded credentials
-
-**Files:** `services/auth.py` (new), `pyproject.toml` (add `passlib[bcrypt]`)
-**Scope:** S
-
-### Task 2: Login Page & Routes
-
-**Description:** Create login UI and `/login` GET/POST + `/logout` POST routes.
-
-**Acceptance criteria:**
-- [ ] `ui/templates/login.html` - Tailwind-styled form, username/password fields
-- [ ] `GET /login` renders page (no auth required)
-- [ ] `POST /login` validates creds, sets HTTP-only Secure SameSite=Lax cookie, redirects to `/`
-- [ ] `POST /logout` clears cookie, redirects to `/login`
-- [ ] Failed login: generic "Invalid credentials" message
-- [ ] Works with HTMX form submission
-
-**Files:** `ui/templates/login.html` (new), `ui/app.py` (add routes)
-**Scope:** S
-**Depends:** Task 1
-
-### Task 3: Protect All Routes
-
-**Description:** Apply auth dependencies to every route.
-
-**Acceptance criteria:**
-- [ ] Read routes (`GET /`, `/config`, `/runs`, `/api/dashboard/partial`, `/api/settings`, `/api/events`) - require valid session (viewer or admin)
-- [ ] Write routes (`PUT /api/settings`, `POST /api/trigger-test-run`, `POST /api/test/*`) - require admin role
-- [ ] Unauthenticated browser -> 302 to `/login`
-- [ ] Unauthenticated HTMX -> 401 with `HX-Redirect: /login`
-- [ ] Viewer accessing admin routes -> 403
-- [ ] Webhook endpoints and `/health`/`/status` remain unauthenticated
-
-**Files:** `ui/app.py`, `server.py`, `tests/test_ui.py`, `tests/test_server.py`
-**Scope:** M
-**Depends:** Tasks 1, 2
-
-### Task 4: LLM Safety & Branch Isolation
-
-**Description:** Prevent LLM from modifying sensitive files, validate syntax, isolate branches.
-
-**Acceptance criteria:**
-- [ ] `FORBIDDEN_PATHS` list: `.github/`, `.forgejo/`, `.gitea/`, `Dockerfile`, `docker-compose.yml`, `.env*`, `services/auth.py`, `server.py`, `pyproject.toml`, `.gitignore`
-- [ ] `validate_llm_patch()` checks file paths against forbidden list, raises `ValueError`
-- [ ] Called in `node_llm_fix_code` before `apply_file_changes()`
-- [ ] `py_compile` syntax check on `.py` files before commit
-- [ ] Branch isolation: push to `autofix/ci-run-{run_id}` instead of source branch
-- [ ] New `autofix_branch` parameter in `WorkspaceGitManager`
-
-**Files:** `nodes.py`, `services/git_manager.py`, `tests/test_llm_safety.py` (new)
-**Scope:** M
-
-### Task 5: Mandatory Webhook Verification
-
-**Description:** Make webhook secrets required and reject unsigned requests.
-
-**Acceptance criteria:**
-- [ ] Startup WARNING if `forgejo_webhook_secret` or `github_webhook_secret` empty
-- [ ] Webhook without signature header + secret configured -> 401
-- [ ] Webhook with invalid signature -> 401
-- [ ] Webhook with no secret configured -> 200 "Ignored" (graceful skip)
-- [ ] Reuses existing `webhook_verify.py` logic
-
-**Files:** `server.py`, `tests/test_server.py`
-**Scope:** S
-
-### Task 6: XSS Prevention
-
-**Description:** Escape all dynamic data in HTML f-strings. Fix innerHTML.
-
-**Acceptance criteria:**
-- [ ] `server.py:112-124` SSE HTML: all `meta.get()` values wrapped with `html.escape()`
-- [ ] `server.py:148` `_sse_status_badge` fallback: escape `status`
-- [ ] `ui/app.py:36` `_status_badge` fallback: escape `status`
-- [ ] `ui/app.py:207-248` `dashboard_partial`: all run fields escaped
-- [ ] `ui/static/js/app.js:94` `showToast`: use `textContent` instead of `innerHTML`
-
-**Files:** `server.py`, `ui/app.py`, `ui/static/js/app.js`
-**Scope:** S
-
-### Task 7: SSRF & Command Injection
-
-**Description:** Validate outbound URLs and make MCP command read-only via API.
-
-**Acceptance criteria:**
-- [ ] `services/net_utils.py` with `validate_safe_url(url)`: reject loopback, RFC1918, `169.254.169.254`
-- [ ] Applied to `test_forgejo` and `test_ollama` endpoints
-- [ ] `mcp_server_command` removed from `allowed_keys` in `update_settings` (env-only)
-- [ ] `mcp_server_command` excluded from `_get_settings()` response
-
-**Files:** `services/net_utils.py` (new), `ui/app.py`
-**Scope:** S
-
-### Task 8: Error Sanitization
-
-**Description:** Global exception handler, sanitize error responses.
-
-**Acceptance criteria:**
-- [ ] Global `exception_handler` in `server.py` catches all unhandled exceptions
-- [ ] Returns `{"detail": "An internal server error occurred."}` to clients
-- [ ] Full stack trace logged server-side only
-- [ ] `str(e)` removed from all test endpoint error responses (`ui/app.py:366,397,425,486,573`)
-- [ ] Generic messages like "Connection test failed" returned instead
-
-**Files:** `server.py`, `ui/app.py`
-**Scope:** S
-
-### Task 9: CDN SRI & .env Hardening
-
-**Description:** Add SRI hashes to CDN scripts, enforce .env file permissions.
-
-**Acceptance criteria:**
-- [ ] `base.html:7` Tailwind CDN: add `integrity` and `crossorigin="anonymous"`
-- [ ] `base.html:26-27` HTMX CDN: add `integrity` and `crossorigin="anonymous"`
-- [ ] Startup check: if `.env` exists and permissions not `0o600`, log WARNING and attempt `chmod 600`
-
-**Files:** `ui/templates/base.html`, `server.py` (startup check)
-**Scope:** S
-
-### Task 10: Tests & Verification
-
-**Description:** Update all existing tests, add security-specific tests, run full verification.
-
-**Acceptance criteria:**
-- [ ] All 90 existing tests pass (updated for auth)
-- [ ] New tests: auth login/logout flow, RBAC enforcement, XSS escaping, forbidden paths, webhook rejection, SSRF blocking
-- [ ] Run `python -m pytest tests/ -v` - all green
-- [ ] Manual verification checklist from task directive passes
-
-**Files:** `tests/test_ui.py`, `tests/test_server.py`, `tests/test_auth.py` (new), `tests/test_llm_safety.py` (new)
-**Scope:** M
+Tasks 1 → 3 are sequential. Tasks 4 and 5 can be done in parallel with each other or after Task 1.
 
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| Breaking all 90 existing tests with auth | High | Task 3 updates all tests; run after each phase |
-| `passlib` bcrypt compatibility | Low | Well-tested library, add to deps early |
-| In-memory sessions lost on restart | Low | Acceptable for single-process; document limitation |
-| HTML escaping breaks dashboard layout | Medium | Test with `<>` in repo names; verify Jinja2 autoescaping |
-| SSRF validation blocks legitimate localhost Ollama | Medium | Allow `localhost` for Ollama only (configurable allowlist) |
+| `discover_repos()` pagination missing repos | Med | Verify limit=100 is sufficient; add pagination loop if needed |
+| Backfill 50 runs × N repos too slow on startup | Med | Semaphore=5 limits concurrency; runs are non-blocking |
+| Dashboard partial repo filter breaks SSE updates | High | The SSE stream is global — filtering is client-side (dropdown filters which data is displayed); the partial endpoint filters server-side but SSE still pushes all events |
+| Repo dropdown stale (new repos discovered after page load) | Low | Page refreshes handle it; auto-refresh of dropdown is out of scope |
 
 ## Open Questions
 
-- Should Ollama `localhost:11434` be exempted from SSRF checks? (Recommend: yes, via config flag)
-- Should the login page require `SECRET_KEY` to be set, or use a default? (Recommend: require it, fail startup if missing)
+- Should the repo dropdown auto-refresh periodically? (Not in MVP scope — manual page reload is sufficient)
+- Should "All Repos" show aggregate across all repos or only the latest 10 runs globally? (Latest 10 across all repos, matching current behavior)

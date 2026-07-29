@@ -6,16 +6,19 @@ import json
 import logging
 import re
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from config import settings
-from services.ci_poller import start_ci_poller, ACTIVE_POLL_INTERVAL
+from services.auth import AuthRedirect, Forbidden
+from services.ci_poller import ACTIVE_POLL_INTERVAL, start_ci_poller
+from services.continuous_sync import backfill_org_runs, start_org_sync, stop_all_sync_tasks
 from services.run_tracker import run_tracker
 from services.webhook_handler import dispatch_webhook_event, get_active_task_count
 from services.webhook_models import CIPlatform, parse_webhook_payload
@@ -24,7 +27,6 @@ from services.webhook_verify import (
     verify_forgejo_signature,
     verify_github_signature,
 )
-from services.auth import AuthRedirect, Forbidden
 from ui.app import router as ui_router
 
 logger = logging.getLogger(__name__)
@@ -57,13 +59,47 @@ def broadcast_event(task_key: str, status: str, meta: dict[str, Any]) -> None:
         logger.warning("SSE event queue full, dropping event for %s", task_key)
 
 
+def _check_config_warnings() -> None:
+    _DEFAULT_FORGEJO_URL = "https://forgejo.example.com"
+    if not settings.forgejo_org and not settings.github_org:
+        logger.warning(
+            "No org configured (FORGEJO_ORG / GITHUB_ORG). "
+            "Repo discovery is disabled. Set one in .env or the Configuration page."
+        )
+    if settings.forgejo_org and not settings.forgejo_token:
+        logger.warning(
+            "FORGEJO_ORG is set (%s) but FORGEJO_TOKEN is empty. "
+            "Repo discovery will fail.", settings.forgejo_org
+        )
+    if settings.forgejo_base_url == _DEFAULT_FORGEJO_URL:
+        logger.warning(
+            "FORGEJO_BASE_URL is still the default (%s). "
+            "Update it to your Forgejo instance URL.", _DEFAULT_FORGEJO_URL
+        )
+    if settings.github_org and not settings.github_token:
+        logger.warning(
+            "GITHUB_ORG is set (%s) but GITHUB_TOKEN is empty. "
+            "Repo discovery will fail.", settings.github_org
+        )
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     global _start_time
     _start_time = time.monotonic()
     logger.info("CI Review Agent server starting")
+    _check_config_warnings()
     await run_tracker.clear()
     poller_task = asyncio.create_task(start_ci_poller(interval_seconds=ACTIVE_POLL_INTERVAL))
+
+    # Start org-wide repo discovery if configured
+    if settings.forgejo_org:
+        start_org_sync(settings.forgejo_org, platform="forgejo")
+        asyncio.create_task(backfill_org_runs(settings.forgejo_org, platform="forgejo"))
+    if settings.github_org:
+        start_org_sync(settings.github_org, platform="github")
+        asyncio.create_task(backfill_org_runs(settings.github_org, platform="github"))
+
     try:
         yield
     finally:
@@ -72,8 +108,6 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
             await poller_task
         except asyncio.CancelledError:
             pass
-        # Stop all continuous sync tasks
-        from services.continuous_sync import stop_all_sync_tasks
         stop_all_sync_tasks()
         logger.info("CI Review Agent server shutting down")
         await run_tracker.clear()
@@ -135,14 +169,29 @@ async def get_webhook_health() -> dict:
 async def sse_endpoint(request: Request) -> StreamingResponse:
     """Streams real-time CI run updates via Server-Sent Events."""
 
+    async def _metrics_snapshot() -> str:
+        counts = await run_tracker.count_by_status()
+        active = counts.get("processing", 0) + counts.get("AGENT_WORKING", 0)
+        success = counts.get("PASSED", 0) + counts.get("success", 0)
+        failed = counts.get("FAILED", 0) + counts.get("failed", 0) + counts.get("error", 0)
+        uptime_seconds = time.monotonic() - _start_time if _start_time else 0
+        if uptime_seconds >= 3600:
+            uptime = f"{int(uptime_seconds // 3600)}h {int((uptime_seconds % 3600) // 60)}m"
+        elif uptime_seconds >= 60:
+            uptime = f"{int(uptime_seconds // 60)}m {int(uptime_seconds % 60)}s"
+        else:
+            uptime = f"{int(uptime_seconds)}s"
+        payload = json.dumps({"active": active, "success": success, "failed": failed, "uptime": uptime})
+        return f"event: metrics_update\ndata: {payload}\n\n"
+
     async def event_generator() -> AsyncIterator[str]:
         while True:
             if await request.is_disconnected():
                 break
             try:
-                event_data = await asyncio.wait_for(sse_event_bus.get(), timeout=30)
-            except asyncio.TimeoutError:
-                yield "event: heartbeat\ndata: {}\n\n"
+                event_data = await asyncio.wait_for(sse_event_bus.get(), timeout=1.0)
+            except TimeoutError:
+                yield await _metrics_snapshot()
                 continue
 
             meta = event_data.get("meta", {})
@@ -161,6 +210,8 @@ async def sse_endpoint(request: Request) -> StreamingResponse:
             )
             payload = json.dumps({"html": html_row, "task_key": event_data["task_key"], "status": event_data["status"]})
             yield f"event: ci_update\ndata: {payload}\n\n"
+            # Also push a metrics snapshot after each CI event
+            yield await _metrics_snapshot()
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -202,7 +253,12 @@ async def handle_forgejo_webhook(request: Request) -> Response:
         raise HTTPException(status_code=401, detail=str(e))
 
     event_type = request.headers.get("X-Forgejo-Event", "")
-    if event_type not in ("workflow_run", "push", "action_run_failure", "action_run_success", "action_run_recover"):
+    _ALLOWED_FORGEJO_EVENTS = frozenset({
+        "push",
+        "action_run_failure", "action_run_success", "action_run_recover",
+        "workflow_run",
+    })
+    if event_type not in _ALLOWED_FORGEJO_EVENTS:
         logger.info("Ignoring Forgejo event: %s", event_type)
         return Response(status_code=200, content="Ignored event type")
 

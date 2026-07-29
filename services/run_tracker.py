@@ -214,6 +214,34 @@ class RunTracker:
             )
             await db.commit()
 
+    async def get_latest_repo_statuses(self) -> dict[str, dict[str, Any]]:
+        """Get the latest run status per repository.
+
+        Returns dict of repo_name -> {status, run_id, updated_at}.
+        """
+        async with aiosqlite.connect(_DB_PATH) as db:
+            await _init_db(_DB_PATH)
+            await self._evict_expired(db)
+            query = """
+                SELECT repository, status, run_id, created_at
+                FROM ci_runs
+                WHERE (repository, created_at) IN (
+                    SELECT repository, MAX(created_at)
+                    FROM ci_runs
+                    GROUP BY repository
+                )
+            """
+            async with db.execute(query) as cursor:
+                rows = await cursor.fetchall()
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            result[row[0]] = {
+                "status": row[1],
+                "run_id": row[2],
+                "updated_at": row[3],
+            }
+        return result
+
     async def get_active_runs(self) -> list[dict[str, Any]]:
         async with aiosqlite.connect(_DB_PATH) as db:
             await _init_db(_DB_PATH)

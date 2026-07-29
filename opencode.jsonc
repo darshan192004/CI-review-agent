@@ -1,0 +1,16 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "code-review-graph": {
+      "type": "local",
+      "command": [
+        "/home/darshan.parmar/.local/share/pipx/venvs/code-review-graph/bin/python",
+        "-m",
+        "code_review_graph",
+        "serve",
+        "--repo",
+        "/home/darshan.parmar/Desktop/CI-review-agent"
+      ]
+    }
+  }
+}

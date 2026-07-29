@@ -227,6 +227,7 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
             "failed_logs": f"Error fetching logs: {redacted}",
             "attempt_count": 0,
             "failure_summary": f"Log fetch error: {redacted}",
+            "repo_info": {},
             "notifications_sent": [],
         }
     finally:

@@ -13,30 +13,8 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   }
 
-  // SSE Connection Status Tracking (via HTMX SSE extension events)
-  const sseStatus = document.getElementById("sse-status");
+  // Webhook health check (called by dashboard.js on SSE connect, also every 30s)
   const webhookHealth = document.getElementById("webhook-health");
-
-  document.body.addEventListener("htmx:sseOpen", function () {
-    if (sseStatus) {
-      sseStatus.textContent = "SSE: connected";
-      sseStatus.className = "text-xs font-mono text-emerald-400";
-    }
-    // Fetch webhook health on SSE connect
-    fetchWebhookHealth();
-    // Trigger full state refresh from DB on reconnection
-    const tableBody = document.getElementById("runs-table-body");
-    if (tableBody) {
-      htmx.trigger(tableBody, "load");
-    }
-  });
-
-  document.body.addEventListener("htmx:sseError", function () {
-    if (sseStatus) {
-      sseStatus.textContent = "SSE: disconnected";
-      sseStatus.className = "text-xs font-mono text-rose-400";
-    }
-  });
 
   // Refresh webhook health every 30s
   setInterval(fetchWebhookHealth, 30000);

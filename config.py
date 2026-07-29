@@ -83,8 +83,12 @@ class Settings(BaseSettings):
     forgejo_webhook_secret: str = ""
     github_webhook_secret: str = ""
 
+    # Org-wide monitoring (auto-discover repos)
+    forgejo_org: str = ""
+    github_org: str = ""
+
     # Server
-    server_host: str = "127.0.0.1"
+    server_host: str = "0.0.0.0"
     server_port: int = 8000
 
     # Git

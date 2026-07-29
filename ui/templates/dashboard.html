@@ -6,14 +6,31 @@
   <!-- Header -->
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
     <div>
-      <h1 class="text-3xl font-bold tracking-tight">Agent Dashboard</h1>
-      <p class="text-sm ci-text-muted mt-1">Real-time status overview of CI failure monitoring & self-healing runs.</p>
+      <h1 class="text-3xl font-bold tracking-tight">CI Dashboard</h1>
+      <p class="text-sm ci-text-muted mt-1">Real-time CI status across all repositories.</p>
     </div>
     <div class="flex items-center gap-3">
-      <button hx-post="/api/trigger-test-run" hx-swap="none" hx-on::after-request="showToast('Simulated CI webhook triggered!', 'info'); htmx.trigger('#runs-table-body', 'load');" class="btn-secondary text-xs">
+      <button hx-post="/api/trigger-test-run" hx-swap="none" hx-on::after-request="showToast('Simulated CI webhook triggered!', 'info');" class="btn-secondary text-xs">
         <svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
         Simulate Webhook Run
       </button>
+    </div>
+  </div>
+
+  <!-- Repo Selector -->
+  <div class="glass-panel p-4">
+    <div class="flex items-center gap-3">
+      <label for="repo-select" class="text-sm font-medium ci-text-muted whitespace-nowrap">Repository:</label>
+      <select id="repo-select" name="repo"
+              class="w-full max-w-md px-4 py-2.5 rounded-lg ci-bg-input ci-border text-sm
+                     focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500"
+              hx-get="/api/dashboard/partial"
+              hx-target="#runs-table-body"
+              hx-trigger="change"
+              hx-swap="innerHTML">
+        <option value="">All Repositories</option>
+      </select>
+      <span id="repo-dot" class="status-dot bg-slate-400"></span>
     </div>
   </div>
 
@@ -73,12 +90,8 @@
       </div>
     </div>
 
-    <!-- SSE-powered live updates + initial DB load -->
-    <div hx-ext="sse" sse-connect="/api/events" sse-swap="ci_update" hx-swap="beforeend">
-    </div>
-
-    <!-- HTMX Partial Live Updating Container (every 10s for metric sync) -->
-    <div hx-get="/api/dashboard/partial" hx-trigger="every 10s, load" hx-swap="innerHTML" id="runs-table-body">
+    <!-- Initial state container — no HTMX poll, no SSE extension -->
+    <div id="runs-table-body">
       {% if recent_runs %}
       <table class="data-table">
         <thead>
@@ -95,7 +108,7 @@
         </thead>
         <tbody>
           {% for run in recent_runs %}
-          <tr>
+          <tr id="run-{{ run.repository }}:{{ run.run_id }}:{{ run.run_attempt | default('1') }}">
             <td class="font-mono text-xs text-indigo-400">{{ run.repository }}</td>
             <td class="font-mono text-xs ci-text-muted">#{{ run.run_id }}</td>
             <td class="font-mono text-xs ci-text-muted">#{{ run.run_attempt | default('1') }}</td>
@@ -123,7 +136,7 @@
         </tbody>
       </table>
       {% else %}
-      <div class="p-12 text-center ci-text-muted">
+      <div class="p-12 text-center ci-text-muted" id="empty-state">
         <svg class="w-12 h-12 mx-auto ci-text-dim mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
         <p class="text-sm font-medium">No webhook runs recorded yet.</p>
         <p class="text-xs ci-text-dim mt-1">Click "Simulate Webhook Run" above to test the workflow.</p>
@@ -133,4 +146,128 @@
   </div>
 
 </div>
+
+<script>
+  (function() {
+    var select = document.getElementById('repo-select');
+    var dot = document.getElementById('repo-dot');
+    var sseStatus = document.getElementById('sse-status');
+
+    function updateDot() {
+      var opt = select.options[select.selectedIndex];
+      if (opt && opt.dataset.dotColor) {
+        var colors = { emerald: 'bg-emerald-400', rose: 'bg-rose-400', blue: 'bg-blue-400', slate: 'bg-slate-400' };
+        dot.className = 'status-dot ' + (colors[opt.dataset.dotColor] || 'bg-slate-400');
+      } else {
+        dot.className = 'status-dot bg-slate-400';
+      }
+    }
+
+    select.addEventListener('change', updateDot);
+
+    function setRepoError(msg) {
+      var label = document.querySelector('label[for="repo-select"]');
+      if (label) {
+        label.textContent = 'Repository: ';
+        var err = document.createElement('span');
+        err.className = 'text-xs font-mono text-rose-400 ml-2';
+        err.textContent = msg;
+        label.appendChild(err);
+      }
+    }
+
+    // Populate repo dropdown from API on load
+    fetch('/api/repos')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.error) {
+          setRepoError('\u26A0\uFE0F ' + data.error);
+          return;
+        }
+        if (!data.repos || data.repos.length === 0) {
+          setRepoError('No repos found for org "' + (data.org || '') + '"');
+          return;
+        }
+        data.repos.forEach(function(repo) {
+          var opt = document.createElement('option');
+          opt.value = repo.name;
+          opt.textContent = repo.name;
+          opt.dataset.dotColor = repo.dot_color || 'slate';
+          select.appendChild(opt);
+        });
+        updateDot();
+      })
+      .catch(function () {
+        setRepoError('Failed to load repos \u2014 network error');
+      });
+
+    // ------------------------------------------------------------------
+    // SSE: native EventSource — handles ci_update + metrics_update
+    // ------------------------------------------------------------------
+    var es = new EventSource('/api/events');
+
+    es.addEventListener('open', function() {
+      if (sseStatus) {
+        sseStatus.textContent = 'SSE: connected';
+        sseStatus.className = 'text-xs font-mono text-emerald-400';
+      }
+      if (typeof fetchWebhookHealth === 'function') fetchWebhookHealth();
+    });
+
+    es.addEventListener('error', function() {
+      if (sseStatus) {
+        sseStatus.textContent = 'SSE: disconnected';
+        sseStatus.className = 'text-xs font-mono text-rose-400';
+      }
+    });
+
+    es.addEventListener('ci_update', function(e) {
+      var data = JSON.parse(e.data);
+      var container = document.getElementById('runs-table-body');
+      if (!container) return;
+
+      var rowId = 'run-' + data.task_key;
+      var existing = document.getElementById(rowId);
+
+      if (existing) {
+        existing.outerHTML = data.html;
+      } else {
+        // New row — look for tbody or replace empty state
+        var tbody = container.querySelector('tbody');
+        if (tbody) {
+          tbody.insertAdjacentHTML('afterbegin', data.html);
+        } else {
+          // Replace empty state with a table
+          container.innerHTML = '<table class="data-table"><thead><tr><th>Repository</th><th>Run ID</th><th>Attempt</th><th>Status</th><th>Platform</th><th>Branch</th><th>Commit</th><th>Author</th></tr></thead><tbody>' + data.html + '</tbody></table>';
+        }
+      }
+    });
+
+    es.addEventListener('metrics_update', function(e) {
+      var data = JSON.parse(e.data);
+      var el;
+      el = document.getElementById('metric-active');
+      if (el) el.textContent = data.active;
+      el = document.getElementById('metric-success');
+      if (el) el.textContent = data.success;
+      el = document.getElementById('metric-failed');
+      if (el) el.textContent = data.failed;
+      el = document.getElementById('metric-uptime');
+      if (el) el.textContent = data.uptime;
+    });
+
+    // Periodic full-state refresh as fallback (every 5 min)
+    setInterval(function() {
+      var repo = select ? select.value : '';
+      var url = '/api/dashboard/partial' + (repo ? '?repo=' + encodeURIComponent(repo) : '');
+      fetch(url)
+        .then(function(r) { return r.text(); })
+        .then(function(html) {
+          var container = document.getElementById('runs-table-body');
+          if (container) container.innerHTML = html;
+        })
+        .catch(function() {});
+    }, 300000);
+  })();
+</script>
 {% endblock %}

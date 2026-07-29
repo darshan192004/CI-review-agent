@@ -262,16 +262,29 @@ async def sync_page(request: Request, _user: User = Depends(require_admin_role))
 
 
 @router.get("/api/dashboard/partial", response_class=HTMLResponse)
-async def dashboard_partial(_user: User = Depends(get_current_user)) -> HTMLResponse:
+async def dashboard_partial(
+    _user: User = Depends(get_current_user),
+    repo: str = Query("", alias="repo"),
+) -> HTMLResponse:
     counts = await run_tracker.count_by_status()
     recent = await run_tracker.get_all_runs()
-    recent = recent[-10:]
     recent.reverse()
     uptime = _format_uptime(_get_uptime_seconds())
 
-    active_cnt = counts.get("processing", 0) + counts.get("AGENT_WORKING", 0)
-    success_cnt = counts.get("PASSED", 0) + counts.get("success", 0)
-    failed_cnt = counts.get("FAILED", 0) + counts.get("failed", 0) + counts.get("error", 0)
+    if repo:
+        recent = [r for r in recent if r["repository"] == repo]
+        # Recompute counts for filtered repo
+        active_cnt = sum(
+            1 for r in recent
+            if r["status"] in ("processing", "AGENT_WORKING", "RUNNING", "PENDING", "QUEUED", "WAITING")
+        )
+        success_cnt = sum(1 for r in recent if r["status"] in ("PASSED", "success"))
+        failed_cnt = sum(1 for r in recent if r["status"] in ("FAILED", "failed", "error", "EXHAUSTED"))
+    else:
+        recent = recent[:10]
+        active_cnt = counts.get("processing", 0) + counts.get("AGENT_WORKING", 0)
+        success_cnt = counts.get("PASSED", 0) + counts.get("success", 0)
+        failed_cnt = counts.get("FAILED", 0) + counts.get("failed", 0) + counts.get("error", 0)
 
     rows = ""
     e = html_mod.escape
@@ -316,6 +329,72 @@ async def dashboard_partial(_user: User = Depends(get_current_user)) -> HTMLResp
     </table>"""
 
     return HTMLResponse(content=html)
+
+
+# ---------------------------------------------------------------------------
+# Repo Status API
+# ---------------------------------------------------------------------------
+
+
+_BROKEN_STATUSES = frozenset({"FAILED", "failed", "EXHAUSTED", "error"})
+
+
+def _repo_dot_color(status: str | None) -> str:
+    if status is None:
+        return "slate"
+    if status in ("PASSED", "success"):
+        return "emerald"
+    if status in _BROKEN_STATUSES:
+        return "rose"
+    return "blue"
+
+
+@router.get("/api/repos")
+async def list_repos(_user: User = Depends(get_current_user)) -> JSONResponse:
+    """List all discovered repos with latest status and broken-first sort."""
+    from services.continuous_sync import discover_repos
+
+    org = settings.forgejo_org or ""
+    platform = "forgejo"
+    if not org:
+        org = settings.github_org or ""
+        platform = "github"
+
+    if not org:
+        return JSONResponse(content={
+            "repos": [], "org": "",
+            "error": "No organization configured. Set FORGEJO_ORG or GITHUB_ORG in .env or Configuration page.",
+        })
+
+    try:
+        discovered = await discover_repos(org, platform)
+    except Exception as e:
+        logger.warning("Failed to discover repos for org %s: %s", org, e)
+        return JSONResponse(content={
+            "repos": [], "org": org,
+            "error": f"Failed to discover repos: {e}",
+        })
+
+    latest = await run_tracker.get_latest_repo_statuses()
+
+    def sort_key(repo: str) -> tuple[int, str]:
+        status = latest.get(repo, {}).get("status")
+        is_broken = 0 if (status and status in _BROKEN_STATUSES) else 1
+        return (is_broken, repo.lower())
+
+    discovered.sort(key=sort_key)
+
+    repos_data = []
+    for repo in discovered:
+        info = latest.get(repo, {})
+        status = info.get("status")
+        repos_data.append({
+            "name": repo,
+            "status": status or "unknown",
+            "dot_color": _repo_dot_color(status),
+        })
+
+    return JSONResponse(content={"repos": repos_data, "org": org})
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +445,8 @@ async def update_settings(request: Request, _user: User = Depends(require_admin_
         "azure_openai_api_key",
         "azure_openai_deployment",
         "llm_provider",
+        "forgejo_org",
+        "github_org",
         "forgejo_webhook_secret",
         "github_webhook_secret",
         "max_retry_attempts",
@@ -448,7 +529,11 @@ async def sync_runs(request: Request, _user: User = Depends(require_admin_role))
     repo = body.get("repo", "").strip()
     branch = body.get("branch", "main").strip()
     limit = min(int(body.get("limit", 20)), 50)
-    continuous = body.get("continuous", "true").lower() == "true"
+    continuous_val = body.get("continuous", True)
+    if isinstance(continuous_val, bool):
+        continuous = continuous_val
+    else:
+        continuous = str(continuous_val).lower() == "true"
 
     if "/" not in repo:
         raise HTTPException(status_code=400, detail="repo must be in owner/repo format")
@@ -529,6 +614,35 @@ async def stop_sync(request: Request, _user: User = Depends(require_admin_role))
 
     stopped = stop_continuous_sync(repo, branch)
     return JSONResponse(content={"stopped": stopped, "repo": repo})
+
+
+@router.post("/api/sync-org")
+async def sync_org(_user: User = Depends(require_admin_role)) -> JSONResponse:
+    """Discover all repos in the configured org and start continuous sync."""
+    from services.continuous_sync import discover_repos, start_continuous_sync
+
+    org = settings.forgejo_org or ""
+    platform = "forgejo"
+    if not org:
+        org = settings.github_org or ""
+        platform = "github"
+    if not org:
+        raise HTTPException(status_code=400, detail="No org configured (set FORGEJO_ORG or GITHUB_ORG in .env)")
+
+    try:
+        repos = await discover_repos(org, platform)
+        started = 0
+        for repo in repos:
+            if start_continuous_sync(repo):
+                started += 1
+        return JSONResponse(content={
+            "ok": True,
+            "org": org,
+            "repos_found": len(repos),
+            "sync_started": started,
+        })
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Org sync failed: {e}")
 
 
 @router.post("/api/test/ollama")

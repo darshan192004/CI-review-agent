@@ -21,6 +21,18 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
     run_id = event.run_id
     run_attempt = event.run_attempt
 
+    logger.info(
+        "=== HANDLE WEBHOOK EVENT === repo=%s run_id=%s run_attempt=%s action=%s status=%s branch=%s sha=%s author=%s",
+        repository,
+        run_id,
+        run_attempt,
+        event.action,
+        event.status,
+        event.branch,
+        event.commit_sha,
+        event.author,
+    )
+
     if not run_id:
         logger.warning(
             "Webhook event missing run_id (repo=%s, action=%s), skipping",
@@ -116,7 +128,16 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
         "patch_summary": "",
     }
 
-    await run_tracker.update_status(repository, run_id, status="AGENT_WORKING", run_attempt=run_attempt)
+    await run_tracker.update_status(
+            repository,
+            run_id,
+            status="AGENT_WORKING",
+            run_attempt=run_attempt,
+            attempt_count=0,
+            branch=event.branch or event.repository.default_branch,
+            commit_sha=event.commit_sha,
+            author=event.author,
+        )
 
     task_key = f"{repository}:{run_id}:{run_attempt}"
     broadcast_event(
@@ -134,8 +155,22 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
     )
 
     try:
+        logger.info(
+            "=== INVOKING LANGGRAPH AGENT === repo=%s run_id=%s platform=%s state_keys=%s",
+            repository,
+            run_id,
+            event.platform.value,
+            list(initial_state.keys()),
+        )
         result = await run_agent(initial_state, use_dev_checkpointer=True)
         final_status = result.get("ci_status", "UNKNOWN")
+        logger.info(
+            "=== AGENT RETURNED === repo=%s run_id=%s final_status=%s result_keys=%s",
+            repository,
+            run_id,
+            final_status,
+            list(result.keys()),
+        )
         await run_tracker.update_status(
             repository,
             run_id,
@@ -146,6 +181,7 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
             author=result.get("ci_author", event.author),
             failure_summary=result.get("failure_summary", ""),
             patch_summary=result.get("patch_summary", ""),
+            attempt_count=result.get("attempt_count", 0),
         )
         broadcast_event(
             task_key=task_key,

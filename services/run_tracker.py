@@ -29,6 +29,7 @@ async def _init_db(db_path: Path) -> None:
                 author TEXT DEFAULT '',
                 failure_summary TEXT DEFAULT '',
                 patch_summary TEXT DEFAULT '',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL,
                 last_webhook_at REAL DEFAULT 0,
@@ -54,6 +55,10 @@ async def _init_db(db_path: Path) -> None:
             if "last_webhook_at" not in columns:
                 await db.execute(
                     "ALTER TABLE ci_runs ADD COLUMN last_webhook_at REAL DEFAULT 0"
+                )
+            if "attempt_count" not in columns:
+                await db.execute(
+                    "ALTER TABLE ci_runs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0"
                 )
         await db.commit()
 
@@ -117,6 +122,7 @@ class RunTracker:
         author: str = "",
         failure_summary: str = "",
         patch_summary: str = "",
+        attempt_count: int = 0,
     ) -> None:
         now = time.monotonic()
         async with aiosqlite.connect(_DB_PATH) as db:
@@ -127,8 +133,9 @@ class RunTracker:
                 INSERT INTO ci_runs (
                     repository, run_id, run_attempt, status, platform, branch,
                     commit_sha, author, failure_summary, patch_summary,
+                    attempt_count,
                     created_at, updated_at, last_webhook_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(repository, run_id, run_attempt) DO UPDATE SET
                     status = excluded.status,
                     platform = excluded.platform,
@@ -137,6 +144,7 @@ class RunTracker:
                     author = excluded.author,
                     failure_summary = excluded.failure_summary,
                     patch_summary = excluded.patch_summary,
+                    attempt_count = excluded.attempt_count,
                     updated_at = excluded.updated_at,
                     last_webhook_at = excluded.last_webhook_at
                 """,
@@ -151,6 +159,7 @@ class RunTracker:
                     author,
                     failure_summary,
                     patch_summary,
+                    attempt_count,
                     now,
                     now,
                     now,
@@ -185,6 +194,7 @@ class RunTracker:
         author: str = "",
         failure_summary: str = "",
         patch_summary: str = "",
+        attempt_count: int = 0,
     ) -> None:
         now = time.monotonic()
         async with aiosqlite.connect(_DB_PATH) as db:
@@ -193,7 +203,7 @@ class RunTracker:
                 """
                 UPDATE ci_runs
                 SET status = ?, branch = ?, commit_sha = ?, author = ?,
-                    failure_summary = ?, patch_summary = ?, updated_at = ?
+                    failure_summary = ?, patch_summary = ?, attempt_count = ?, updated_at = ?
                 WHERE repository = ? AND run_id = ? AND run_attempt = ?
                 """,
                 (
@@ -203,6 +213,7 @@ class RunTracker:
                     author,
                     failure_summary,
                     patch_summary,
+                    attempt_count,
                     now,
                     repository,
                     run_id,
@@ -245,8 +256,8 @@ class RunTracker:
             await self._evict_expired(db)
             async with db.execute(
                 "SELECT repository, run_id, run_attempt, status, platform, branch, "
-                "commit_sha, author, failure_summary, patch_summary, "
-                "created_at, updated_at, last_webhook_at FROM ci_runs "
+                "commit_sha, author, failure_summary, patch_summary, attempt_count, "
+                "created_at, updated_at FROM ci_runs "
                 "WHERE status IN ('processing', 'AGENT_WORKING', 'RUNNING', 'PENDING', 'QUEUED', 'WAITING')"
             ) as cursor:
                 rows = await cursor.fetchall()
@@ -275,7 +286,7 @@ class RunTracker:
             await self._evict_expired(db)
             async with db.execute(
                 "SELECT repository, run_id, run_attempt, status, platform, branch, "
-                "commit_sha, author, failure_summary, patch_summary, "
+                "commit_sha, author, failure_summary, patch_summary, attempt_count, "
                 "created_at, updated_at FROM ci_runs ORDER BY created_at ASC"
             ) as cursor:
                 rows = await cursor.fetchall()
@@ -348,9 +359,10 @@ class RunTracker:
             "author": row[7],
             "failure_summary": row[8],
             "patch_summary": row[9],
-            "created_at": row[10],
-            "updated_at": row[11],
-            "last_webhook_at": row[12] if len(row) > 12 else 0,
+            "attempt_count": row[10],
+            "created_at": row[11],
+            "updated_at": row[12],
+            "last_webhook_at": row[13] if len(row) > 13 else 0,
         }
 
 

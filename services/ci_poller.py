@@ -84,6 +84,13 @@ async def poll_active_runs() -> None:
         if "/" not in repository:
             continue
 
+        if current_status in ("AGENT_WORKING", "error", "EXHAUSTED", "PASSED", "success"):
+            logger.debug(
+                "Skipping poll for %s/%s — agent in control (status=%s)",
+                repository, run_id, current_status,
+            )
+            continue
+
         owner, repo_name = repository.split("/", 1)
         actual = await get_actual_ci_status(owner, repo_name, run_id)
 

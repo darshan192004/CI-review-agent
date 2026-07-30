@@ -98,6 +98,9 @@ class Settings(BaseSettings):
     git_pat_token: str = ""
     git_clone_depth: int = 1
 
+    # Bot account name (for filtering out the agent's own CI triggers)
+    ci_bot_username: str = ""
+
     # Authentication
     secret_key: str = ""
     admin_username: str = ""

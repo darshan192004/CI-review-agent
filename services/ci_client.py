@@ -67,14 +67,18 @@ class GitHubCIClient(CIClient):
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     async def fetch_logs(self, owner: str, repo: str, run_id: str) -> str:
         url = f"{self.base_url}/repos/{owner}/{repo}/actions/runs/{run_id}"
+        logger.info("=== GITHUB API: GET run info === url=%s", url)
         resp = await self._client.get(url, headers=self._headers())
+        logger.info("=== GITHUB API: run info response === status=%d", resp.status_code)
         resp.raise_for_status()
         run_data = resp.json()
         log_url = run_data.get("jobs_url", "")
         if not log_url:
             raise CIClientError(f"No jobs URL found for run {run_id}")
 
+        logger.info("=== GITHUB API: GET jobs === url=%s", log_url)
         jobs_resp = await self._client.get(log_url, headers=self._headers())
+        logger.info("=== GITHUB API: jobs response === status=%d", jobs_resp.status_code)
         jobs_resp.raise_for_status()
         jobs = jobs_resp.json().get("jobs", [])
 
@@ -168,30 +172,25 @@ class ForgejoCIClient(CIClient):
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     async def fetch_logs(self, owner: str, repo: str, run_id: str) -> str:
         run_url = f"{self.base_url}/api/v1/repos/{owner}/{repo}/actions/runs/{run_id}"
+        logger.info("=== FORGEJO API: GET run info === url=%s", run_url)
         resp = await self._client.get(run_url, headers=self._headers())
+        logger.info("=== FORGEJO API: run info response === status=%d", resp.status_code)
         resp.raise_for_status()
+        run_data = resp.json()
 
-        tasks_url = f"{self.base_url}/api/v1/repos/{owner}/{repo}/actions/runs/{run_id}/tasks"
-        tasks_resp = await self._client.get(tasks_url, headers=self._headers())
-        tasks_resp.raise_for_status()
-        tasks = tasks_resp.json().get("tasks", [])
+        run_index = run_data.get("index_in_repo", run_id)
+        job_index = 0
+        attempt = 1
 
-        all_logs: list[str] = []
-        for task in tasks:
-            task_name = task.get("name", "unknown")
-            task_status = task.get("status", "")
-            if task_status == "failure":
-                all_logs.append(f"FAILED TASK: {task_name}")
-                log_url = task.get("log_url", "")
-                if log_url:
-                    log_resp = await self._client.get(
-                        log_url, headers=self._headers()
-                    )
-                    if log_resp.status_code == 200:
-                        all_logs.append(log_resp.text[:2000])
+        log_url = f"{self.base_url}/{owner}/{repo}/actions/runs/{run_index}/jobs/{job_index}/attempt/{attempt}/logs"
+        logger.info("=== FORGEJO API: GET logs === url=%s", log_url)
+        log_resp = await self._client.get(log_url, headers=self._headers())
+        logger.info("=== FORGEJO API: logs response === status=%d", log_resp.status_code)
+        if log_resp.status_code == 200:
+            return parse_ci_logs(log_resp.text[:5000])
 
-        raw = "\n".join(all_logs) if all_logs else "No failure details found"
-        return parse_ci_logs(raw)
+        logger.warning("=== FORGEJO API: logs not available === status=%d url=%s", log_resp.status_code, log_url)
+        return "No failure details found"
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     async def trigger_workflow(
@@ -215,6 +214,8 @@ class ForgejoCIClient(CIClient):
     ) -> str:
         import asyncio
 
+        _FORGEJO_TERMINAL_STATUSES = frozenset({"success", "failure", "cancelled", "skipped"})
+
         url = f"{self.base_url}/api/v1/repos/{owner}/{repo}/actions/runs/{run_id}"
         elapsed = 0
         while elapsed < max_wait:
@@ -223,9 +224,14 @@ class ForgejoCIClient(CIClient):
             data = resp.json()
             status = data.get("status", "unknown")
 
+            # GitHub format: status="completed" + conclusion
             if status == "completed":
                 conclusion = data.get("conclusion", "")
                 return "PASSED" if conclusion == "success" else "FAILED"
+
+            # Forgejo format: status directly set to terminal value
+            if status in _FORGEJO_TERMINAL_STATUSES:
+                return "PASSED" if status == "success" else "FAILED"
 
             await asyncio.sleep(interval)
             elapsed += interval

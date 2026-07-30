@@ -121,3 +121,36 @@ class TestParseWebhookPayload:
         event = parse_webhook_payload(CIPlatform.GITHUB, GITHUB_PAYLOAD)
         assert event.platform == CIPlatform.GITHUB
         assert event.run_id == "67890"
+
+
+FORGEJO_ACTION_PAYLOAD: dict = {
+    "action": "failure",
+    "run": {
+        "id": 22,
+        "run_attempt": 1,
+        "name": "CI",
+        "prettyref": "main",
+        "commit_sha": "abc123def456",
+        "status": "failure",
+        "repository": {
+            "full_name": "testadmin/test-failing-ci",
+            "clone_url": "http://localhost:3000/testadmin/test-failing-ci.git",
+            "default_branch": "main",
+            "html_url": "http://localhost:3000/testadmin/test-failing-ci",
+        },
+        "trigger_user": {"login": "testadmin", "id": 1},
+    },
+}
+
+
+class TestParseForgejoActionPayload:
+    def test_action_run_failure_payload(self) -> None:
+        event = parse_webhook_payload(CIPlatform.FORGEJO, FORGEJO_ACTION_PAYLOAD)
+        assert event.platform == CIPlatform.FORGEJO
+        assert event.run_id == "22"
+        assert event.run_attempt == "1"
+        assert event.branch == "main"
+        assert event.commit_sha == "abc123def456"
+        assert event.repository.full_name == "testadmin/test-failing-ci"
+        assert event.status == "failure"
+        assert event.author == "testadmin"

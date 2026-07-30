@@ -164,20 +164,44 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
         parts = repo.split("/")
         owner, repo_name = parts[0], parts[1]
         run_id = state.get("run_id", "")
+        token = settings.github_token if state.get("ci_platform") == "github" else settings.forgejo_token
+
+        logger.info(
+            "=== FETCHING LOGS === owner=%s repo=%s run_id=%s platform=%s token_present=%s forgejo_base=%s",
+            owner,
+            repo_name,
+            run_id,
+            state.get("ci_platform"),
+            bool(token),
+            settings.forgejo_base_url if state.get("ci_platform") == "forgejo" else "N/A",
+        )
 
         failed_logs = await ci_client.fetch_logs(owner, repo_name, run_id)
+        logger.info(
+            "=== LOGS FETCHED === run=%s len=%d starts_with=%s",
+            run_id,
+            len(failed_logs) if isinstance(failed_logs, str) else -1,
+            (failed_logs[:80] + "...") if isinstance(failed_logs, str) and len(failed_logs) > 80 else failed_logs,
+        )
 
         run_info = await ci_client.get_run_info(owner, repo_name, run_id)
         author = run_info.get("actor", {}).get("login", "unknown")
+        if author == "unknown":
+            author = run_info.get("trigger_user", {}).get("login", "unknown")
         head_branch = run_info.get("head_branch", state.get("branch", "unknown"))
+        if head_branch == "unknown":
+            head_branch = run_info.get("prettyref", run_info.get("ref_name", "main"))
         head_sha = run_info.get("head_sha", state.get("commit_sha", "unknown"))
+        if head_sha == "unknown":
+            head_sha = run_info.get("commit_sha", "")
 
         failure_summary = _extract_failure_summary(failed_logs)
 
-        # Build repo_info for workspace git manager
         clone_url = state.get("repo_info", {}).get("clone_url", "")
         if not clone_url:
             clone_url = run_info.get("head_repository", {}).get("clone_url", "")
+        if not clone_url:
+            clone_url = run_info.get("repository", {}).get("clone_url", "")
         if not clone_url and settings.forgejo_base_url:
             clone_url = f"{settings.forgejo_base_url.rstrip('/')}/{owner}/{repo_name}.git"
         token = settings.github_token if state.get("ci_platform") == "github" else settings.forgejo_token
@@ -189,6 +213,32 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
             "branch": head_branch,
             "commit_sha": head_sha,
         }
+
+        source_files: dict[str, str] = {}
+        if clone_url and token:
+            try:
+                import httpx as _httpx
+
+                tree_url = f"{settings.forgejo_base_url.rstrip('/')}/api/v1/repos/{owner}/{repo_name}/git/trees/{head_sha}?recursive=1"
+                logger.info("=== FETCHING SOURCE TREE === url=%s", tree_url)
+                async with _httpx.AsyncClient(timeout=30.0) as hc:
+                    tree_resp = await hc.get(tree_url, headers={"Authorization": f"token {token}"})
+                    if tree_resp.status_code == 200:
+                        tree_data = tree_resp.json()
+                        py_files = [e["path"] for e in tree_data.get("tree", []) if e["type"] == "blob" and e["path"].endswith(".py")]
+                        for fpath in py_files[:15]:
+                            file_url = f"{settings.forgejo_base_url.rstrip('/')}/api/v1/repos/{owner}/{repo_name}/contents/{fpath}?ref={head_sha}"
+                            file_resp = await hc.get(file_url, headers={"Authorization": f"token {token}"})
+                            if file_resp.status_code == 200:
+                                import base64 as _b64
+                                file_data = file_resp.json()
+                                content = _b64.b64decode(file_data["content"]).decode("utf-8", errors="replace")
+                                source_files[fpath] = content
+                        logger.info("=== FETCHED %d SOURCE FILES === files=%s", len(source_files), list(source_files.keys()))
+                    else:
+                        logger.warning("=== SOURCE TREE FETCH FAILED === status=%d", tree_resp.status_code)
+            except Exception as e:
+                logger.warning("Failed to fetch source files (non-fatal): %s", e)
 
         if mcp_client:
             try:
@@ -220,6 +270,7 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
             "commit_sha": head_sha,
             "branch": head_branch,
             "repo_info": repo_info,
+            "source_files": source_files,
             "notifications_sent": [f"Initial alert sent for run {run_id}"],
         }
     except Exception as e:
@@ -252,6 +303,14 @@ async def node_llm_fix_code(state: AgentState) -> dict[str, Any]:
             f"Previous analysis: {state.get('llm_analysis', 'N/A')}\n"
             "Please try a different approach.\n"
         )
+
+    failed_logs = state.get("failed_logs", "No logs available")
+    logger.info(
+        "LLM prompt prepared: failed_logs_len=%d, source_files=%d, attempt=%d",
+        len(failed_logs) if isinstance(failed_logs, str) else -1,
+        len(source_files),
+        attempt,
+    )
 
     system_prompt = (
         "You are an expert CI/CD fix agent. Given failing CI logs and source code, "
@@ -292,6 +351,11 @@ Analyze the failure and provide a fix as JSON."""
 
     try:
         response: RepairAnalysis = await structured_llm.ainvoke(messages)
+        logger.info(
+            "LLM response: explanation_len=%d, modified_files=%d",
+            len(response.explanation or ""),
+            len(response.modified_files or []),
+        )
 
         repo_info = state.get("repo_info", {})
         clone_url = repo_info.get("clone_url", "")
@@ -314,14 +378,22 @@ Analyze the failure and provide a fix as JSON."""
             commit_sha=repo_info.get("commit_sha", state.get("commit_sha", "")),
             depth=settings.git_clone_depth,
         ) as git_ws:
+            new_run_id = state.get("run_id", "")
             file_changes = [{"file_path": f.file_path, "content": f.content} for f in response.modified_files]
+            if not file_changes:
+                logger.warning("LLM returned no modified_files for attempt %d", attempt)
+            logger.info(
+                "Applying patch: file_changes=%d, clone_url=%s",
+                len(file_changes),
+                "yes" if clone_url else "no",
+            )
             if file_changes and git_ws.apply_file_changes(file_changes):
                 commit_msg = (
                     f"fix(ci): auto-repair attempt {attempt}\n\n{response.explanation}"
                 )
                 success = git_ws.commit_and_push(commit_msg)
+                logger.info("Push result: success=%s, new_run_id=%s", success, new_run_id)
 
-        new_run_id = state.get("run_id", "")
         if success:
             try:
                 ci_client = _build_ci_client(state)
@@ -333,6 +405,9 @@ Analyze the failure and provide a fix as JSON."""
                 runs = await ci_client.list_runs(owner, repo_name, branch)
                 if runs:
                     new_run_id = str(runs[0].get("id", state.get("run_id", "")))
+                    logger.info("Discovered new CI run: %s", new_run_id)
+                else:
+                    logger.warning("No CI runs found after push")
             except Exception as e:
                 logger.warning("Failed to discover new CI run after push: %s", e)
             finally:

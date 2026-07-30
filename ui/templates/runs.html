@@ -56,6 +56,7 @@
           <th>Branch</th>
           <th>Commit</th>
           <th>Author</th>
+          <th>Attempts</th>
           <th>Failure Summary</th>
           <th>Patch Summary</th>
         </tr>
@@ -82,6 +83,8 @@
           <td class="text-xs text-slate-400 uppercase font-mono">{{ run.platform | default('—') }}</td>
           <td class="text-xs text-slate-400">{{ run.branch | default('—') }}</td>
           <td class="text-xs text-slate-400 font-mono">{{ run.commit_sha[:8] if run.commit_sha else '—' }}</td>
+          <td class="text-xs text-slate-400">{{ run.author | default('—') }}</td>
+          <td class="font-mono text-xs">{{ run.attempt_count | default(0) }}</td>
           <td class="text-xs text-slate-400">{{ run.author | default('—') }}</td>
           <td class="text-xs text-slate-400 max-w-xs truncate" title="{{ run.failure_summary }}">{{ run.failure_summary[:60] if run.failure_summary else '—' }}{% if run.failure_summary and run.failure_summary | length > 60 %}...{% endif %}</td>
           <td class="text-xs text-slate-400 max-w-xs truncate" title="{{ run.patch_summary }}">{{ run.patch_summary[:60] if run.patch_summary else '—' }}{% if run.patch_summary and run.patch_summary | length > 60 %}...{% endif %}</td>

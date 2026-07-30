@@ -68,9 +68,9 @@ class TestDashboardPage:
 
     def test_contains_metrics(self) -> None:
         resp = _client.get("/", cookies=_admin_cookie())
-        assert "metric-active" in resp.text
-        assert "metric-success" in resp.text
-        assert "metric-failed" in resp.text
+        assert "stat-processing-jobs" in resp.text
+        assert "stat-succeeded-runs" in resp.text
+        assert "stat-failed-runs" in resp.text
 
     def test_unauthenticated_redirects(self) -> None:
         resp = _client.get("/", follow_redirects=False)
@@ -177,6 +177,25 @@ class TestDashboardPartial:
         assert resp.status_code == 200
         assert "<table" in resp.text
         assert "Repository" in resp.text
+
+    def test_no_oob_metrics_leak(self) -> None:
+        resp = _client.get("/api/dashboard/partial", cookies=_admin_cookie())
+        assert "stat-processing-jobs" not in resp.text
+        assert "hx-swap-oob" not in resp.text
+
+
+class TestMetricsPartial:
+    def test_returns_metric_values(self) -> None:
+        resp = _client.get("/api/metrics/partial", cookies=_admin_cookie())
+        assert resp.status_code == 200
+        assert "stat-processing-jobs" in resp.text
+        assert "stat-succeeded-runs" in resp.text
+        assert "stat-failed-runs" in resp.text
+        assert "stat-system-uptime" in resp.text
+
+    def test_no_table_leak(self) -> None:
+        resp = _client.get("/api/metrics/partial", cookies=_admin_cookie())
+        assert "<table" not in resp.text
 
 
 class TestConnectionTestEndpoints:

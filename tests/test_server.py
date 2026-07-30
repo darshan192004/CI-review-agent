@@ -146,3 +146,39 @@ class TestGithubWebhook:
             },
         )
         assert resp.status_code == 400
+
+
+FORGEJO_ACTION_RUN_FAILURE_PAYLOAD = {
+    "action": "failure",
+    "run": {
+        "id": 22,
+        "run_attempt": 1,
+        "name": "CI",
+        "prettyref": "main",
+        "commit_sha": "abc123def456",
+        "status": "failure",
+        "repository": {
+            "full_name": "testadmin/test-failing-ci",
+            "clone_url": "http://localhost:3000/testadmin/test-failing-ci.git",
+            "default_branch": "main",
+            "html_url": "http://localhost:3000/testadmin/test-failing-ci",
+        },
+        "trigger_user": {"login": "testadmin", "id": 1},
+    },
+}
+
+
+class TestForgejoActionRunFailure:
+    def test_accepts_action_run_failure_payload(self) -> None:
+        body = json.dumps(FORGEJO_ACTION_RUN_FAILURE_PAYLOAD).encode()
+        sig = hmac.new(WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
+        resp = client.post(
+            "/webhook/forgejo",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Forgejo-Event": "action_run_failure",
+                "X-Forgejo-Signature": sig,
+            },
+        )
+        assert resp.status_code == 202

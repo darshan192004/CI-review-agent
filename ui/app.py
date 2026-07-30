@@ -185,6 +185,7 @@ async def dashboard(request: Request, _user: User = Depends(get_current_user)) -
                     "branch": r.get("branch", ""),
                     "commit_sha": r.get("commit_sha", ""),
                     "author": r.get("author", ""),
+                    "attempt_count": r.get("attempt_count", 0),
                     "failure_summary": r.get("failure_summary", ""),
                     "patch_summary": r.get("patch_summary", ""),
                 }
@@ -257,7 +258,7 @@ async def sync_page(request: Request, _user: User = Depends(require_admin_role))
 
 
 # ---------------------------------------------------------------------------
-# HTMX partial: dashboard live poll (Out-Of-Band Metric Syncing)
+# HTMX partials: dashboard runs table + metrics (separate endpoints)
 # ---------------------------------------------------------------------------
 
 
@@ -266,24 +267,11 @@ async def dashboard_partial(
     _user: User = Depends(get_current_user),
     repo: str = Query("", alias="repo"),
 ) -> HTMLResponse:
-    counts = await run_tracker.count_by_status()
     recent = await run_tracker.get_all_runs()
     recent.reverse()
-    uptime = _format_uptime(_get_uptime_seconds())
 
     if repo:
         recent = [r for r in recent if r["repository"] == repo]
-        # Recompute counts for filtered repo
-        active_cnt = sum(
-            1 for r in recent
-            if r["status"] in ("processing", "AGENT_WORKING", "RUNNING", "PENDING", "QUEUED", "WAITING")
-        )
-        success_cnt = sum(1 for r in recent if r["status"] in ("PASSED", "success"))
-        failed_cnt = sum(1 for r in recent if r["status"] in ("FAILED", "failed", "error", "EXHAUSTED"))
-    else:
-        active_cnt = counts.get("processing", 0) + counts.get("AGENT_WORKING", 0)
-        success_cnt = counts.get("PASSED", 0) + counts.get("success", 0)
-        failed_cnt = counts.get("FAILED", 0) + counts.get("failed", 0) + counts.get("error", 0)
 
     rows = ""
     e = html_mod.escape
@@ -300,15 +288,7 @@ async def dashboard_partial(
             <td class="text-xs text-slate-400">{e(run.get("author", "\u2014"))}</td>
         </tr>"""
 
-    html = f"""
-    <!-- Out of Band Metric Card Updates for Instant Syncing -->
-    <p id="metric-active" hx-swap-oob="outerHTML" class="text-3xl font-bold text-blue-400 font-mono">{active_cnt}</p>
-    <p id="metric-success" hx-swap-oob="outerHTML" class="text-3xl font-bold text-emerald-400 font-mono">{success_cnt}</p>
-    <p id="metric-failed" hx-swap-oob="outerHTML" class="text-3xl font-bold text-rose-400 font-mono">{failed_cnt}</p>
-    <p id="metric-uptime" hx-swap-oob="outerHTML" class="text-3xl font-bold ci-text-main font-mono">{uptime}</p>
-
-    <!-- Table Body HTML -->
-    <table class="data-table">
+    html = f"""<table class="data-table">
       <thead>
         <tr>
           <th>Repository</th>
@@ -326,6 +306,37 @@ async def dashboard_partial(
                 'No webhook runs recorded yet.</td></tr>'}
       </tbody>
     </table>"""
+
+    return HTMLResponse(content=html)
+
+
+@router.get("/api/metrics/partial", response_class=HTMLResponse)
+async def metrics_partial(
+    _user: User = Depends(get_current_user),
+    repo: str = Query("", alias="repo"),
+) -> HTMLResponse:
+    if repo:
+        counts = await run_tracker.count_by_status(repo=repo)
+        recent = await run_tracker.get_all_runs()
+        recent = [r for r in recent if r["repository"] == repo]
+        active_cnt = sum(
+            1 for r in recent
+            if r["status"] in ("processing", "AGENT_WORKING", "RUNNING", "PENDING", "QUEUED", "WAITING")
+        )
+        success_cnt = sum(1 for r in recent if r["status"] in ("PASSED", "success"))
+        failed_cnt = sum(1 for r in recent if r["status"] in ("FAILED", "failed", "error", "EXHAUSTED"))
+    else:
+        counts = await run_tracker.count_by_status()
+        active_cnt = counts.get("processing", 0) + counts.get("AGENT_WORKING", 0)
+        success_cnt = counts.get("PASSED", 0) + counts.get("success", 0)
+        failed_cnt = counts.get("FAILED", 0) + counts.get("failed", 0) + counts.get("error", 0)
+
+    uptime = _format_uptime(_get_uptime_seconds())
+
+    html = f"""<p class="text-3xl font-bold text-blue-400 font-mono" id="stat-processing-jobs">{active_cnt}</p>
+<p class="text-3xl font-bold text-emerald-400 font-mono" id="stat-succeeded-runs">{success_cnt}</p>
+<p class="text-3xl font-bold text-rose-400 font-mono" id="stat-failed-runs">{failed_cnt}</p>
+<p class="text-3xl font-bold ci-text-main font-mono" id="stat-system-uptime">{uptime}</p>"""
 
     return HTMLResponse(content=html)
 

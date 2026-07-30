@@ -17,6 +17,7 @@ class CIStatus(str, Enum):
     PASSED = "PASSED"
     RUNNING = "RUNNING"
     EXHAUSTED = "EXHAUSTED"
+    CANNOT_FIX = "CANNOT_FIX"
     UNKNOWN = "UNKNOWN"
 
 

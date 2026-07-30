@@ -184,7 +184,9 @@ async def sse_endpoint(request: Request, repo: str = Query("")) -> StreamingResp
             uptime = f"{int(uptime_seconds // 60)}m {int(uptime_seconds % 60)}s"
         else:
             uptime = f"{int(uptime_seconds)}s"
-        payload = json.dumps({"active": active, "success": success, "failed": failed, "uptime": uptime})
+        payload = json.dumps({
+            "active": active, "success": success, "failed": failed, "uptime": uptime,
+        })
         return f"event: metrics_update\ndata: {payload}\n\n"
 
     async def event_generator() -> AsyncIterator[str]:
@@ -242,27 +244,54 @@ def _sse_status_badge(status: str) -> str:
 
 @app.post("/webhook/forgejo")
 async def handle_forgejo_webhook(request: Request) -> Response:
+    # === INSTRUMENT: log raw request metadata ===
+    raw_headers = dict(request.headers)
+    safe_headers = {k: v for k, v in raw_headers.items() if k.lower() not in ("authorization", "cookie", "x-hub-signature-256", "x-forgejo-signature")}
+    sig_header = raw_headers.get("X-Hub-Signature-256") or raw_headers.get("X-Hub-Signature") or raw_headers.get("X-Forgejo-Signature", "(none)")
+    event_header_raw = raw_headers.get("X-Forgejo-Event") or raw_headers.get("X-Gitea-Event") or "(none)"
+    logger.info(
+        "=== WEBHOOK RECEIVED === method=%s path=%s content_length=%s sig_header=%s event_header=%s headers=%s",
+        request.method,
+        request.url.path,
+        request.headers.get("content-length", "?"),
+        sig_header[:20] + "..." if len(sig_header) > 20 else sig_header,
+        event_header_raw,
+        safe_headers,
+    )
+
     body = await request.body()
+    logger.info("=== WEBHOOK BODY (first 500 bytes) === %s", body[:500])
 
     if not settings.forgejo_webhook_secret:
         logger.error("Forgejo webhook secret not configured — rejecting request")
         raise HTTPException(status_code=503, detail="Webhook secret not configured on server")
 
-    signature = request.headers.get("X-Forgejo-Signature")
+    # Accept standard X-Hub-Signature-256 (GitHub-compatible) or X-Forgejo-Signature
+    signature = (
+        request.headers.get("X-Hub-Signature-256")
+        or request.headers.get("X-Hub-Signature")
+        or request.headers.get("X-Forgejo-Signature")
+    )
+    if signature is None:
+        logger.warning("AUTH FAILURE: No signature header found (tried X-Hub-Signature-256, X-Hub-Signature, X-Forgejo-Signature)")
+    else:
+        logger.info("AUTH: Using signature header (first 20 chars): %s...", signature[:20])
     try:
         verify_forgejo_signature(body, signature, settings.forgejo_webhook_secret)
     except WebhookVerificationError as e:
-        logger.warning("Forgejo webhook verification failed: %s", e)
+        logger.warning("AUTH FAILURE: Webhook signature mismatch: %s", e)
         raise HTTPException(status_code=401, detail=str(e))
 
-    event_type = request.headers.get("X-Forgejo-Event", "")
+    # Accept X-Forgejo-Event (custom) or X-Gitea-Event (Forgejo/Gitea native)
+    event_type = request.headers.get("X-Forgejo-Event") or request.headers.get("X-Gitea-Event") or ""
+    logger.info("EVENT: event_type=%s", event_type or "(empty — will be ignored)")
     _ALLOWED_FORGEJO_EVENTS = frozenset({
         "push",
         "action_run_failure", "action_run_success", "action_run_recover",
         "workflow_run",
     })
     if event_type not in _ALLOWED_FORGEJO_EVENTS:
-        logger.info("Ignoring Forgejo event: %s", event_type)
+        logger.info("EVENT IGNORED: event_type=%s not in %s", event_type, _ALLOWED_FORGEJO_EVENTS)
         return Response(status_code=200, content="Ignored event type")
 
     try:

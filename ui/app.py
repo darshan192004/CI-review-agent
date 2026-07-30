@@ -328,6 +328,76 @@ async def metrics_partial(
 
 
 # ---------------------------------------------------------------------------
+# Repo Discovery API
+# ---------------------------------------------------------------------------
+
+
+_BROKEN_STATUSES = frozenset({"FAILED", "failed", "EXHAUSTED", "error"})
+
+
+@router.get("/api/repos")
+async def list_repos(_user: User = Depends(get_current_user)) -> JSONResponse:
+    """List all known repos with latest status, sorted broken-first.
+
+    Merges repos from two sources:
+      1. Webhook history (repos that have sent webhooks)
+      2. CI API discovery (repos the token can access)
+    """
+    from services.repo_discovery import discover_repos, get_known_repos
+
+    known_repos = await get_known_repos()
+
+    org = settings.forgejo_org or settings.github_org or ""
+    platform = "forgejo" if settings.forgejo_org else "github"
+    if org:
+        try:
+            discovered = await discover_repos(org, platform)
+        except Exception:
+            discovered = []
+    else:
+        discovered = []
+
+    seen: set[str] = set(discovered)
+    all_repos = list(discovered)
+    for r in known_repos:
+        if r not in seen:
+            seen.add(r)
+            all_repos.append(r)
+
+    all_runs = await run_tracker.get_all_runs()
+    latest: dict[str, str] = {}
+    for run in all_runs:
+        latest[run["repository"]] = run["status"]
+
+    def _dot_color(status: str | None) -> str:
+        if status is None:
+            return "slate"
+        if status in ("PASSED", "success"):
+            return "emerald"
+        if status in _BROKEN_STATUSES:
+            return "rose"
+        return "blue"
+
+    def _sort_key(repo: str) -> tuple[int, str]:
+        status = latest.get(repo)
+        is_broken = 0 if (status and status in _BROKEN_STATUSES) else 1
+        return (is_broken, repo.lower())
+
+    all_repos.sort(key=_sort_key)
+
+    repos_data = [
+        {
+            "name": repo,
+            "status": latest.get(repo, "unknown"),
+            "dot_color": _dot_color(latest.get(repo)),
+        }
+        for repo in all_repos
+    ]
+
+    return JSONResponse(content={"repos": repos_data, "org": org})
+
+
+# ---------------------------------------------------------------------------
 # Settings API
 # ---------------------------------------------------------------------------
 

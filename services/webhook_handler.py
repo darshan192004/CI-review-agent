@@ -51,6 +51,26 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
         )
         return
 
+    # Prevent infinite loop: skip events triggered by the bot itself
+    if event.author and settings.ci_bot_username and event.author == settings.ci_bot_username:
+        logger.info(
+            "Event from bot user '%s' for %s run %s, skipping to prevent infinite loop",
+            event.author,
+            repository,
+            run_id,
+        )
+        await run_tracker.record(
+            repository,
+            run_id,
+            run_attempt=run_attempt,
+            status="skipped_bot",
+            platform=event.platform.value,
+            branch=event.branch or event.repository.default_branch,
+            commit_sha=event.commit_sha,
+            author=event.author,
+        )
+        return
+
     # Detect rerun: run already completed, webhook is for a new attempt
     is_rerun = await run_tracker.is_completed(repository, run_id, run_attempt)
     if is_rerun:

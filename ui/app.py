@@ -398,6 +398,68 @@ async def list_repos(_user: User = Depends(get_current_user)) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# History Seed API
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/runs/history", response_class=HTMLResponse)
+async def seed_run_history(
+    _user: User = Depends(get_current_user),
+) -> HTMLResponse:
+    """Fetch recent CI runs from provider API to seed the dashboard.
+
+    Called once on dashboard page load (HTMX hx-trigger="load").
+    Seeds the run_tracker with historical data, then returns the runs
+    table HTML partial so the dashboard populates immediately.
+    """
+    from services.repo_discovery import fetch_repo_run_history
+
+    try:
+        count = await fetch_repo_run_history()
+        logger.info("History seed complete: %d runs recorded", count)
+    except Exception as e:
+        logger.error("History seed failed: %s", e)
+
+    recent = await run_tracker.get_all_runs()
+    recent.reverse()
+    rows = ""
+    e = html_mod.escape
+    for run in recent:
+        commit_short = e(run.get("commit_sha", "")[:8]) if run.get("commit_sha") else "\u2014"
+        rows += f"""<tr id="run-{e(run['repository'])}:{e(run['run_id'])}:{e(run.get('run_attempt', '1'))}">
+            <td class="font-mono text-xs text-indigo-400">{e(run["repository"])}</td>
+            <td class="font-mono text-xs text-slate-400">#{e(run["run_id"])}</td>
+            <td class="font-mono text-xs text-slate-400">#{e(run.get("run_attempt", "1"))}</td>
+            <td>{_status_badge(run["status"])}</td>
+            <td class="text-xs text-slate-400 uppercase font-mono">{e(run.get("platform", "\u2014"))}</td>
+            <td class="text-xs text-slate-400">{e(run.get("branch", "\u2014"))}</td>
+            <td class="text-xs text-slate-400 font-mono">{commit_short}</td>
+            <td class="text-xs text-slate-400">{e(run.get("author", "\u2014"))}</td>
+        </tr>"""
+
+    html = f"""<table class="data-table">
+      <thead>
+        <tr>
+          <th>Repository</th>
+          <th>Run ID</th>
+          <th>Attempt</th>
+          <th>Status</th>
+          <th>Platform</th>
+          <th>Branch</th>
+          <th>Commit</th>
+          <th>Author</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows if rows else '<tr><td colspan="8" class="p-12 text-center text-slate-400 text-sm">'
+                'No CI history found.</td></tr>'}
+      </tbody>
+    </table>"""
+
+    return HTMLResponse(content=html)
+
+
+# ---------------------------------------------------------------------------
 # Settings API
 # ---------------------------------------------------------------------------
 

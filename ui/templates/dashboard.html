@@ -233,8 +233,12 @@ endblock %} {% block content %}
             </div>
         </div>
 
-        <!-- Initial state container — no HTMX poll, no SSE extension -->
-        <div id="runs-table-body" class="max-h-[500px] overflow-y-auto">
+        <!-- Initial state container — one-shot HTMX load to seed history, then SSE for live updates -->
+        <div id="runs-table-body" class="max-h-[500px] overflow-y-auto"
+             hx-get="/api/runs/history"
+             hx-trigger="load"
+             hx-target="this"
+             hx-swap="innerHTML">
             {% if recent_runs %}
             <table class="data-table">
                 <thead>

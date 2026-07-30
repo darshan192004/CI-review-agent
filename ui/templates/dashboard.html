@@ -33,6 +33,7 @@ endblock %} {% block content %}
             <button
                 hx-post="/api/trigger-test-run"
                 hx-swap="none"
+                hx-vals='js:{repo: document.getElementById("repo-select").value}'
                 hx-on::after-request="showToast('Simulated CI webhook triggered!', 'info');"
                 class="btn-secondary text-xs"
             >

@@ -484,17 +484,34 @@ async def update_settings(request: Request, _user: User = Depends(require_admin_
 
 
 @router.post("/api/trigger-test-run")
-async def trigger_test_run(_user: User = Depends(require_admin_role)) -> JSONResponse:
+async def trigger_test_run(
+    _user: User = Depends(require_admin_role),
+    repo: str = Query("", alias="repo"),
+) -> JSONResponse:
+    from server import broadcast_event
+
     import random
     run_id = str(random.randint(1000, 9999))
-    repo = "owner/ci-test-repo"
+    if not repo:
+        repo = "owner/ci-test-repo"
+    attempt = "1"
+    task_key = f"{repo}:{run_id}:{attempt}"
     await run_tracker.record(repository=repo, run_id=run_id, status="processing")
-    
-    # Simulate run completion after background task
+    broadcast_event(
+        task_key=task_key,
+        status="processing",
+        meta={"repository": repo, "run_id": run_id, "run_attempt": attempt, "platform": "", "branch": "", "commit_sha": "", "author": ""},
+    )
+
     import asyncio
     async def _complete():
         await asyncio.sleep(2)
         await run_tracker.update_status(repository=repo, run_id=run_id, status="PASSED")
+        broadcast_event(
+            task_key=task_key,
+            status="PASSED",
+            meta={"repository": repo, "run_id": run_id, "run_attempt": attempt, "platform": "", "branch": "", "commit_sha": "", "author": ""},
+        )
 
     asyncio.create_task(_complete())
     return JSONResponse(content={"ok": True, "run_id": run_id, "repository": repo})

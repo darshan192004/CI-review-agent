@@ -71,8 +71,6 @@ class Settings(BaseSettings):
 
     # Agent Engine Options
     max_retry_attempts: int = 3
-    poll_interval_seconds: int = 30
-    poll_max_wait_seconds: int = 600
     log_max_tokens: int = 4000
     checkpointer_type: str = "sqlite"  # "sqlite" or "memory"
     notification_trigger_level: str = "failures_only"  # "always", "failures_only", "success_only", "never"

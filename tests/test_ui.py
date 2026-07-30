@@ -233,39 +233,6 @@ class TestConnectionTestEndpoints:
         assert resp.status_code == 403
 
 
-class TestSyncEndpoint:
-    def test_sync_requires_admin(self) -> None:
-        resp = _client.post("/api/sync-runs", cookies=_viewer_cookie(), json={"repo": "a/b"})
-        assert resp.status_code == 403
-
-    def test_sync_requires_auth(self) -> None:
-        resp = _client.post("/api/sync-runs", follow_redirects=False)
-        assert resp.status_code == 302
-
-    def test_sync_invalid_repo_format(self) -> None:
-        resp = _client.post("/api/sync-runs", cookies=_admin_cookie(), json={"repo": "no-slash"})
-        assert resp.status_code == 400
-        assert "owner/repo" in resp.json()["detail"]
-
-    @patch("ui.app.create_ci_client")
-    def test_sync_success(self, mock_create: object) -> None:
-        mock_client = AsyncMock()
-        mock_client.list_runs = AsyncMock(return_value=[
-            {"id": 1, "status": "success", "branch": "main", "commit_sha": "abc123", "actor": {"login": "user1"}},
-            {"id": 2, "status": "failure", "branch": "main", "commit_sha": "def456", "actor": {"login": "user2"}},
-        ])
-        mock_client.close = AsyncMock()
-        mock_create.return_value = mock_client
-
-        resp = _client.post("/api/sync-runs", cookies=_admin_cookie(), json={
-            "repo": "testadmin/test-failing-ci", "branch": "main", "limit": 10,
-        })
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["synced"] == 2
-        assert data["repo"] == "testadmin/test-failing-ci"
-
-
 class TestClearHistory:
     def test_clear_requires_admin(self) -> None:
         resp = _client.post("/api/clear-history", cookies=_viewer_cookie())
@@ -279,14 +246,3 @@ class TestClearHistory:
         resp = _client.post("/api/clear-history", cookies=_admin_cookie())
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
-
-
-class TestSyncPage:
-    def test_sync_page_requires_admin(self) -> None:
-        resp = _client.get("/sync", cookies=_viewer_cookie(), follow_redirects=False)
-        assert resp.status_code == 403
-
-    def test_sync_page_renders(self) -> None:
-        resp = _client.get("/sync", cookies=_admin_cookie())
-        assert resp.status_code == 200
-        assert "Sync from Forgejo" in resp.text

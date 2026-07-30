@@ -134,8 +134,8 @@ class RunTracker:
                     repository, run_id, run_attempt, status, platform, branch,
                     commit_sha, author, failure_summary, patch_summary,
                     attempt_count,
-                    created_at, updated_at, last_webhook_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(repository, run_id, run_attempt) DO UPDATE SET
                     status = excluded.status,
                     platform = excluded.platform,
@@ -145,8 +145,7 @@ class RunTracker:
                     failure_summary = excluded.failure_summary,
                     patch_summary = excluded.patch_summary,
                     attempt_count = excluded.attempt_count,
-                    updated_at = excluded.updated_at,
-                    last_webhook_at = excluded.last_webhook_at
+                    updated_at = excluded.updated_at
                 """,
                 (
                     repository,
@@ -162,7 +161,6 @@ class RunTracker:
                     attempt_count,
                     now,
                     now,
-                    now,
                 ),
             )
             await db.commit()
@@ -172,16 +170,6 @@ class RunTracker:
             status,
             platform,
         )
-
-    async def touch_webhook(self, repository: str, run_id: str, run_attempt: str = "1") -> None:
-        now = time.monotonic()
-        async with aiosqlite.connect(_DB_PATH) as db:
-            await _init_db(_DB_PATH)
-            await db.execute(
-                "UPDATE ci_runs SET last_webhook_at = ? WHERE repository = ? AND run_id = ? AND run_attempt = ?",
-                (now, repository, run_id, run_attempt),
-            )
-            await db.commit()
 
     async def update_status(
         self,
@@ -222,34 +210,6 @@ class RunTracker:
             )
             await db.commit()
 
-    async def get_latest_repo_statuses(self) -> dict[str, dict[str, Any]]:
-        """Get the latest run status per repository.
-
-        Returns dict of repo_name -> {status, run_id, updated_at}.
-        """
-        async with aiosqlite.connect(_DB_PATH) as db:
-            await _init_db(_DB_PATH)
-            await self._evict_expired(db)
-            query = """
-                SELECT repository, status, run_id, created_at
-                FROM ci_runs
-                WHERE (repository, created_at) IN (
-                    SELECT repository, MAX(created_at)
-                    FROM ci_runs
-                    GROUP BY repository
-                )
-            """
-            async with db.execute(query) as cursor:
-                rows = await cursor.fetchall()
-        result: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            result[row[0]] = {
-                "status": row[1],
-                "run_id": row[2],
-                "updated_at": row[3],
-            }
-        return result
-
     async def get_active_runs(self) -> list[dict[str, Any]]:
         async with aiosqlite.connect(_DB_PATH) as db:
             await _init_db(_DB_PATH)
@@ -259,23 +219,6 @@ class RunTracker:
                 "commit_sha, author, failure_summary, patch_summary, attempt_count, "
                 "created_at, updated_at FROM ci_runs "
                 "WHERE status IN ('processing', 'AGENT_WORKING', 'RUNNING', 'PENDING', 'QUEUED', 'WAITING')"
-            ) as cursor:
-                rows = await cursor.fetchall()
-        return [self._row_to_dict(row) for row in rows]
-
-    async def get_pollable_runs(self, webhook_stale_seconds: int = 30) -> list[dict[str, Any]]:
-        """Get runs that need polling — active runs without a recent webhook."""
-        now = time.monotonic()
-        async with aiosqlite.connect(_DB_PATH) as db:
-            await _init_db(_DB_PATH)
-            await self._evict_expired(db)
-            async with db.execute(
-                "SELECT repository, run_id, run_attempt, status, platform, branch, "
-                "commit_sha, author, failure_summary, patch_summary, "
-                "created_at, updated_at, last_webhook_at FROM ci_runs "
-                "WHERE status IN ('processing', 'AGENT_WORKING', 'RUNNING', 'PENDING', 'QUEUED', 'WAITING') "
-                "AND (? - last_webhook_at > ? OR last_webhook_at = 0)",
-                (now, webhook_stale_seconds),
             ) as cursor:
                 rows = await cursor.fetchall()
         return [self._row_to_dict(row) for row in rows]
@@ -318,35 +261,6 @@ class RunTracker:
             await db.execute("DELETE FROM ci_runs")
             await db.commit()
 
-    async def get_webhook_health(self) -> dict[str, dict[str, Any]]:
-        """Get webhook health stats per repository."""
-        now = time.monotonic()
-        async with aiosqlite.connect(_DB_PATH) as db:
-            await _init_db(_DB_PATH)
-            await self._evict_expired(db)
-            async with db.execute(
-                "SELECT repository, "
-                "MAX(last_webhook_at) as last_webhook, "
-                "COUNT(*) as total_runs, "
-                "SUM(CASE WHEN status IN ('RUNNING', 'AGENT_WORKING', 'processing') THEN 1 ELSE 0 END) as active_runs "
-                "FROM ci_runs GROUP BY repository"
-            ) as cursor:
-                rows = await cursor.fetchall()
-
-        health = {}
-        for row in rows:
-            repo = row[0]
-            last_webhook = row[1] or 0
-            seconds_since = now - last_webhook if last_webhook else None
-            health[repo] = {
-                "last_webhook_at": last_webhook,
-                "seconds_since_webhook": round(seconds_since, 1) if seconds_since is not None else None,
-                "total_runs": row[2],
-                "active_runs": row[3],
-                "status": "healthy" if (seconds_since is not None and seconds_since < 300) else "stale",
-            }
-        return health
-
     def _row_to_dict(self, row: tuple[Any, ...]) -> dict[str, Any]:
         return {
             "repository": row[0],
@@ -362,7 +276,6 @@ class RunTracker:
             "attempt_count": row[10],
             "created_at": row[11],
             "updated_at": row[12],
-            "last_webhook_at": row[13] if len(row) > 13 else 0,
         }
 
 

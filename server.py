@@ -17,8 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from config import settings
 from services.auth import AuthRedirect, Forbidden
-from services.ci_poller import ACTIVE_POLL_INTERVAL, start_ci_poller
-from services.continuous_sync import backfill_org_runs, start_org_sync, stop_all_sync_tasks
+from services.ci_waiter import notify as ci_waiter_notify
 from services.run_tracker import run_tracker
 from services.webhook_handler import dispatch_webhook_event, get_active_task_count
 from services.webhook_models import CIPlatform, parse_webhook_payload
@@ -90,25 +89,10 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     logger.info("CI Review Agent server starting")
     _check_config_warnings()
     await run_tracker.clear()
-    poller_task = asyncio.create_task(start_ci_poller(interval_seconds=ACTIVE_POLL_INTERVAL))
-
-    # Start org-wide repo discovery if configured
-    if settings.forgejo_org:
-        start_org_sync(settings.forgejo_org, platform="forgejo")
-        asyncio.create_task(backfill_org_runs(settings.forgejo_org, platform="forgejo"))
-    if settings.github_org:
-        start_org_sync(settings.github_org, platform="github")
-        asyncio.create_task(backfill_org_runs(settings.github_org, platform="github"))
 
     try:
         yield
     finally:
-        poller_task.cancel()
-        try:
-            await poller_task
-        except asyncio.CancelledError:
-            pass
-        stop_all_sync_tasks()
         logger.info("CI Review Agent server shutting down")
         await run_tracker.clear()
 
@@ -157,12 +141,6 @@ async def get_status() -> dict:
         "background_tasks": get_active_task_count(),
         "status_counts": counts,
     }
-
-
-@app.get("/api/webhook-health")
-async def get_webhook_health() -> dict:
-    """Webhook health status per repository."""
-    return await run_tracker.get_webhook_health()
 
 
 @app.get("/api/events")
@@ -309,9 +287,13 @@ async def handle_forgejo_webhook(request: Request) -> Response:
         event.run_id,
     )
 
-    # Mark webhook received for adaptive poller
-    await run_tracker.touch_webhook(
-        event.repository.full_name, event.run_id, event.run_attempt
+    # Notify CI waiter (push-based) if this is a terminal CI status
+    ci_waiter_notify(
+        repo=event.repository.full_name,
+        commit_sha=event.commit_sha,
+        status=event.status,
+        run_id=event.run_id,
+        run_attempt=event.run_attempt,
     )
 
     dispatch_webhook_event(event)
@@ -370,9 +352,13 @@ async def handle_github_webhook(request: Request) -> Response:
         event.run_id,
     )
 
-    # Mark webhook received for adaptive poller
-    await run_tracker.touch_webhook(
-        event.repository.full_name, event.run_id, event.run_attempt
+    # Notify CI waiter (push-based) if this is a terminal CI status
+    ci_waiter_notify(
+        repo=event.repository.full_name,
+        commit_sha=event.commit_sha,
+        status=event.status,
+        run_id=event.run_id,
+        run_attempt=event.run_attempt,
     )
 
     dispatch_webhook_event(event)

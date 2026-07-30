@@ -171,7 +171,7 @@
           </div>
           <div>
             <h3 class="font-semibold text-lg">Agent Execution Engine</h3>
-            <p class="text-xs ci-text-muted">Fine-tune self-correction loops, polling, and checkpoints</p>
+            <p class="text-xs ci-text-muted">Fine-tune self-correction loops and checkpoints</p>
           </div>
         </div>
 
@@ -192,25 +192,6 @@
               <option value="sqlite" {% if settings.checkpointer_type == 'sqlite' %}selected{% endif %}>SQLite Checkpointer (Persistent DB State)</option>
               <option value="memory" {% if settings.checkpointer_type == 'memory' %}selected{% endif %}>In-Memory Checkpointer (Transient / Fast Dev)</option>
             </select>
-          </div>
-
-          <div class="grid grid-cols-2 gap-3">
-            <div>
-              <label class="block text-xs font-semibold ci-text-main uppercase tracking-wider mb-1.5">CI Poll Interval</label>
-              <select name="poll_interval_seconds" class="select-field text-xs">
-                <option value="10" {% if settings.poll_interval_seconds == 10 %}selected{% endif %}>10 seconds (Ultra-Fast)</option>
-                <option value="30" {% if settings.poll_interval_seconds == 30 %}selected{% endif %}>30 seconds (Default)</option>
-                <option value="60" {% if settings.poll_interval_seconds == 60 %}selected{% endif %}>60 seconds (Conservative)</option>
-              </select>
-            </div>
-            <div>
-              <label class="block text-xs font-semibold ci-text-main uppercase tracking-wider mb-1.5">Poll Max Wait</label>
-              <select name="poll_max_wait_seconds" class="select-field text-xs">
-                <option value="300" {% if settings.poll_max_wait_seconds == 300 %}selected{% endif %}>300s (5 Minutes)</option>
-                <option value="600" {% if settings.poll_max_wait_seconds == 600 %}selected{% endif %}>600s (10 Minutes)</option>
-                <option value="1200" {% if settings.poll_max_wait_seconds == 1200 %}selected{% endif %}>1200s (20 Minutes)</option>
-              </select>
-            </div>
           </div>
 
           <div>

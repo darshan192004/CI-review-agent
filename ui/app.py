@@ -11,7 +11,6 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from config import settings
-from services.ci_client import create_ci_client
 from services.auth import (
     User,
     _COOKIE_NAME,
@@ -137,8 +136,6 @@ def _get_settings() -> Any:
         "forgejo_webhook_secret",
         "github_webhook_secret",
         "max_retry_attempts",
-        "poll_interval_seconds",
-        "poll_max_wait_seconds",
         "log_max_tokens",
         "checkpointer_type",
         "notification_trigger_level",
@@ -246,17 +243,6 @@ async def runs_page(
     )
 
 
-@router.get("/sync", response_class=HTMLResponse)
-async def sync_page(request: Request, _user: User = Depends(require_admin_role)) -> HTMLResponse:
-    recent = await run_tracker.get_all_runs()
-    recent.reverse()
-    return templates.TemplateResponse(
-        request,
-        "sync.html",
-        {"active_page": "sync", "recent_runs": recent[:50]},
-    )
-
-
 # ---------------------------------------------------------------------------
 # HTMX partials: dashboard runs table + metrics (separate endpoints)
 # ---------------------------------------------------------------------------
@@ -342,72 +328,6 @@ async def metrics_partial(
 
 
 # ---------------------------------------------------------------------------
-# Repo Status API
-# ---------------------------------------------------------------------------
-
-
-_BROKEN_STATUSES = frozenset({"FAILED", "failed", "EXHAUSTED", "error"})
-
-
-def _repo_dot_color(status: str | None) -> str:
-    if status is None:
-        return "slate"
-    if status in ("PASSED", "success"):
-        return "emerald"
-    if status in _BROKEN_STATUSES:
-        return "rose"
-    return "blue"
-
-
-@router.get("/api/repos")
-async def list_repos(_user: User = Depends(get_current_user)) -> JSONResponse:
-    """List all discovered repos with latest status and broken-first sort."""
-    from services.continuous_sync import discover_repos
-
-    org = settings.forgejo_org or ""
-    platform = "forgejo"
-    if not org:
-        org = settings.github_org or ""
-        platform = "github"
-
-    if not org:
-        return JSONResponse(content={
-            "repos": [], "org": "",
-            "error": "No organization configured. Set FORGEJO_ORG or GITHUB_ORG in .env or Configuration page.",
-        })
-
-    try:
-        discovered = await discover_repos(org, platform)
-    except Exception as e:
-        logger.warning("Failed to discover repos for org %s: %s", org, e)
-        return JSONResponse(content={
-            "repos": [], "org": org,
-            "error": f"Failed to discover repos: {e}",
-        })
-
-    latest = await run_tracker.get_latest_repo_statuses()
-
-    def sort_key(repo: str) -> tuple[int, str]:
-        status = latest.get(repo, {}).get("status")
-        is_broken = 0 if (status and status in _BROKEN_STATUSES) else 1
-        return (is_broken, repo.lower())
-
-    discovered.sort(key=sort_key)
-
-    repos_data = []
-    for repo in discovered:
-        info = latest.get(repo, {})
-        status = info.get("status")
-        repos_data.append({
-            "name": repo,
-            "status": status or "unknown",
-            "dot_color": _repo_dot_color(status),
-        })
-
-    return JSONResponse(content={"repos": repos_data, "org": org})
-
-
-# ---------------------------------------------------------------------------
 # Settings API
 # ---------------------------------------------------------------------------
 
@@ -460,8 +380,6 @@ async def update_settings(request: Request, _user: User = Depends(require_admin_
         "forgejo_webhook_secret",
         "github_webhook_secret",
         "max_retry_attempts",
-        "poll_interval_seconds",
-        "poll_max_wait_seconds",
         "log_max_tokens",
         "checkpointer_type",
         "notification_trigger_level",
@@ -484,7 +402,7 @@ async def update_settings(request: Request, _user: User = Depends(require_admin_
         write_env(updates)
         for k, v in updates.items():
             if hasattr(settings, k):
-                if k in ("max_retry_attempts", "poll_interval_seconds", "poll_max_wait_seconds", "log_max_tokens", "server_port"):
+                if k in ("max_retry_attempts", "log_max_tokens", "server_port"):
                     try:
                         setattr(settings, k, int(v))
                     except ValueError:
@@ -512,147 +430,10 @@ async def trigger_test_run(_user: User = Depends(require_admin_role)) -> JSONRes
     return JSONResponse(content={"ok": True, "run_id": run_id, "repository": repo})
 
 
-def _map_forgejo_status(status: str) -> str:
-    return {
-        "success": "PASSED",
-        "failure": "FAILED",
-        "running": "RUNNING",
-        "waiting": "processing",
-        "cancelled": "error",
-        "skipped": "error",
-    }.get(status, "processing")
-
-
-@router.post("/api/sync-runs")
-async def sync_runs(request: Request, _user: User = Depends(require_admin_role)) -> JSONResponse:
-    body: dict[str, Any] = {}
-    content_type = request.headers.get("content-type", "")
-    if "application/json" in content_type:
-        try:
-            body = await request.json()
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid JSON body")
-    elif "application/x-www-form-urlencoded" in content_type:
-        form = await request.form()
-        body = dict(form)
-
-    repo = body.get("repo", "").strip()
-    branch = body.get("branch", "main").strip()
-    limit = min(int(body.get("limit", 20)), 50)
-    continuous_val = body.get("continuous", True)
-    if isinstance(continuous_val, bool):
-        continuous = continuous_val
-    else:
-        continuous = str(continuous_val).lower() == "true"
-
-    if "/" not in repo:
-        raise HTTPException(status_code=400, detail="repo must be in owner/repo format")
-
-    owner, repo_name = repo.split("/", 1)
-    ci_client = create_ci_client("forgejo", settings.forgejo_token, settings.forgejo_base_url)
-
-    try:
-        runs = await ci_client.list_runs(owner, repo_name, branch, limit)
-        synced = 0
-        for run in runs:
-            status = _map_forgejo_status(run.get("status", ""))
-            actor = run.get("trigger_user") or run.get("actor") or {}
-            await run_tracker.record(
-                repository=repo,
-                run_id=str(run.get("id", "")),
-                run_attempt="1",
-                status=status,
-                platform="forgejo",
-                branch=run.get("prettyref", branch),
-                commit_sha=run.get("commit_sha", ""),
-                author=actor.get("login", "unknown") if isinstance(actor, dict) else str(actor),
-            )
-            synced += 1
-
-        # Start continuous sync if requested
-        sync_started = False
-        if continuous:
-            from services.continuous_sync import start_continuous_sync
-            sync_started = start_continuous_sync(repo, branch)
-
-        return JSONResponse(content={
-            "synced": synced,
-            "repo": repo,
-            "branch": branch,
-            "continuous_sync": sync_started,
-        })
-    except Exception as e:
-        logger.error("Sync failed: %s", e)
-        raise HTTPException(status_code=502, detail=f"Failed to sync from Forgejo: {e}")
-    finally:
-        await ci_client.close()
-
-
 @router.post("/api/clear-history")
 async def clear_history(_user: User = Depends(require_admin_role)) -> JSONResponse:
     await run_tracker.clear()
     return JSONResponse(content={"ok": True, "message": "History cleared"})
-
-
-@router.get("/api/sync-status")
-async def get_sync_status(_user: User = Depends(get_current_user)) -> JSONResponse:
-    """Get status of active continuous sync tasks."""
-    from services.continuous_sync import get_active_sync_tasks
-    return JSONResponse(content={"tasks": get_active_sync_tasks()})
-
-
-@router.post("/api/stop-sync")
-async def stop_sync(request: Request, _user: User = Depends(require_admin_role)) -> JSONResponse:
-    """Stop continuous sync for a repo."""
-    from services.continuous_sync import stop_continuous_sync
-    body: dict[str, Any] = {}
-    content_type = request.headers.get("content-type", "")
-    if "application/json" in content_type:
-        try:
-            body = await request.json()
-        except Exception:
-            pass
-    elif "application/x-www-form-urlencoded" in content_type:
-        form = await request.form()
-        body = dict(form)
-
-    repo = body.get("repo", "").strip()
-    branch = body.get("branch", "main").strip()
-
-    if not repo:
-        raise HTTPException(status_code=400, detail="repo is required")
-
-    stopped = stop_continuous_sync(repo, branch)
-    return JSONResponse(content={"stopped": stopped, "repo": repo})
-
-
-@router.post("/api/sync-org")
-async def sync_org(_user: User = Depends(require_admin_role)) -> JSONResponse:
-    """Discover all repos in the configured org and start continuous sync."""
-    from services.continuous_sync import discover_repos, start_continuous_sync
-
-    org = settings.forgejo_org or ""
-    platform = "forgejo"
-    if not org:
-        org = settings.github_org or ""
-        platform = "github"
-    if not org:
-        raise HTTPException(status_code=400, detail="No org configured (set FORGEJO_ORG or GITHUB_ORG in .env)")
-
-    try:
-        repos = await discover_repos(org, platform)
-        started = 0
-        for repo in repos:
-            if start_continuous_sync(repo):
-                started += 1
-        return JSONResponse(content={
-            "ok": True,
-            "org": org,
-            "repos_found": len(repos),
-            "sync_started": started,
-        })
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Org sync failed: {e}")
 
 
 @router.post("/api/test/ollama")

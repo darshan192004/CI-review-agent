@@ -439,6 +439,10 @@ Analyze the failure and provide a fix as JSON."""
                 success = git_ws.commit_and_push(commit_msg)
                 logger.info("Push result: success=%s, new_run_id=%s", success, new_run_id)
 
+            # Capture the new head SHA after push for ci_waiter
+            new_head_sha = git_ws.get_head_sha()
+            logger.info("New HEAD SHA after push: %s", new_head_sha[:12])
+
         if success:
             try:
                 ci_client = _build_ci_client(state)
@@ -461,7 +465,7 @@ Analyze the failure and provide a fix as JSON."""
         return {
             "explanation": response.explanation,
             "patch_applied": success,
-            "commit_sha": repo_info.get("commit_sha", state.get("commit_sha", "")),
+            "commit_sha": new_head_sha if success else repo_info.get("commit_sha", state.get("commit_sha", "")),
             "run_id": new_run_id,
             "patch_summary": response.explanation[:200],
             "attempt_count": attempt + 1,
@@ -489,36 +493,40 @@ Analyze the failure and provide a fix as JSON."""
 
 
 async def node_poll_ci_status(state: AgentState) -> dict[str, Any]:
-    logger.info("Polling CI status for run %s", state.get("run_id"))
-    ci_client = _build_ci_client(state)
+    from services.ci_waiter import wait_for_ci
 
-    try:
-        repo = state.get("repository", "")
-        parts = repo.split("/")
-        owner, repo_name = parts[0], parts[1]
-        run_id = state.get("run_id", "")
+    repo = state.get("repository", "")
+    commit_sha = state.get("commit_sha", "")
 
-        ci_status = await ci_client.poll_status(
-            owner,
-            repo_name,
-            run_id,
-            interval=settings.poll_interval_seconds,
-            max_wait=settings.poll_max_wait_seconds,
-        )
+    logger.info("Waiting for CI via webhook: %s @ %s", repo, commit_sha[:12] if commit_sha else "?")
 
-        return {
-            "ci_status": ci_status,
-            "notifications_sent": [f"CI status: {ci_status}"],
-        }
-
-    except Exception as e:
-        logger.error("CI poll failed: %s", e)
+    if not commit_sha:
+        logger.warning("No commit_sha in state — cannot wait for CI webhook")
         return {
             "ci_status": "FAILED",
-            "notifications_sent": [f"CI poll error: {e}"],
+            "notifications_sent": ["No commit_sha available for CI waiter"],
         }
-    finally:
-        await ci_client.close()
+
+    result = await wait_for_ci(repo, commit_sha, timeout=600)
+    raw_status = result.get("ci_status", "TIMEOUT")
+
+    # Map webhook/terminal statuses to graph-compatible values
+    if raw_status in ("completed", "success", "PASSED"):
+        ci_status = "PASSED"
+    elif raw_status in ("failure", "cancelled", "skipped", "error", "FAILED"):
+        ci_status = "FAILED"
+    else:
+        ci_status = "FAILED"
+
+    logger.info("CI waiter resolved: %s -> %s", raw_status, ci_status)
+
+    return {
+        "ci_status": ci_status,
+        "run_id": result.get("run_id", state.get("run_id", "")),
+        "run_attempt": result.get("run_attempt", state.get("run_attempt", "1")),
+        "failure_summary": result.get("failed_logs", ""),
+        "notifications_sent": [f"CI status: {ci_status} (via webhook)"],
+    }
 
 
 async def node_notify_success(state: AgentState) -> dict[str, Any]:

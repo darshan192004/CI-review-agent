@@ -22,6 +22,10 @@ class TestRouteCiOutcome:
         state = {"ci_status": "RUNNING", "attempt_count": 2}
         assert route_ci_outcome(state) == "fix_code"
 
+    def test_cannot_fix_routes_to_escalation(self):
+        state = {"ci_status": "CANNOT_FIX", "attempt_count": 1}
+        assert route_ci_outcome(state) == "notify_human_escalation"
+
 
 class TestBuildGraph:
     def test_graph_compiles(self):

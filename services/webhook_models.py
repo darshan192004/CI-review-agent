@@ -100,6 +100,16 @@ def parse_forgejo_payload(payload: dict[str, Any]) -> WebhookEvent:
     elif conclusion in ("failure", "cancelled"):
         status = "completed"
 
+    # Determine author with fallbacks: sender → workflow_run.trigger_user → workflow_run.sender
+    author = sender_data.get("login", "")
+    if not author:
+        workflow_run = payload.get("workflow_run")
+        if isinstance(workflow_run, dict):
+            author = (
+                workflow_run.get("trigger_user", {}).get("login", "")
+                or workflow_run.get("sender", {}).get("login", "")
+            )
+
     return WebhookEvent(
         platform=CIPlatform.FORGEJO,
         action=action,
@@ -118,7 +128,7 @@ def parse_forgejo_payload(payload: dict[str, Any]) -> WebhookEvent:
         run_id=run_id,
         run_attempt=run_attempt,
         status=status,
-        author=sender_data.get("login", ""),
+        author=author,
     )
 
 

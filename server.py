@@ -265,7 +265,7 @@ async def handle_forgejo_webhook(request: Request) -> Response:
     logger.info("EVENT: event_type=%s", event_type or "(empty — will be ignored)")
     _ALLOWED_FORGEJO_EVENTS = frozenset({
         "push",
-        "action_run_failure", "action_run_success", "action_run_recover",
+        "action_run", "action_run_failure", "action_run_success", "action_run_recover",
         "workflow_run",
     })
     if event_type not in _ALLOWED_FORGEJO_EVENTS:
@@ -296,6 +296,14 @@ async def handle_forgejo_webhook(request: Request) -> Response:
         run_attempt=event.run_attempt,
     )
 
+    logger.info(
+        "=== AGENT TRIGGER CHECK === action=%s status=%s platform=%s repo=%s run=%s — dispatching to handle_webhook_event",
+        event.action,
+        event.status,
+        event.platform.value,
+        event.repository.full_name,
+        event.run_id,
+    )
     dispatch_webhook_event(event)
 
     broadcast_event(
@@ -361,6 +369,14 @@ async def handle_github_webhook(request: Request) -> Response:
         run_attempt=event.run_attempt,
     )
 
+    logger.info(
+        "=== AGENT TRIGGER CHECK === action=%s status=%s platform=%s repo=%s run=%s — dispatching to handle_webhook_event",
+        event.action,
+        event.status,
+        event.platform.value,
+        event.repository.full_name,
+        event.run_id,
+    )
     dispatch_webhook_event(event)
 
     broadcast_event(

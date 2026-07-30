@@ -22,6 +22,10 @@ def route_ci_outcome(
     if state.get("ci_status") == "PASSED":
         return "notify_success"
 
+    # Terminal states that should not retry
+    if state.get("ci_status") in ("CANNOT_FIX", "EXHAUSTED"):
+        return "notify_human_escalation"
+
     attempt = state.get("attempt_count", 1)
     if attempt >= settings.max_retry_attempts:
         state["ci_status"] = "EXHAUSTED"

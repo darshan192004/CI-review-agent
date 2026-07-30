@@ -52,11 +52,19 @@ class WorkspaceGitManager:
         commit_sha: str = "",
         depth: int = 1,
     ) -> None:
+        if not clone_url:
+            raise GitError("No clone URL provided — cannot clone repository")
+        if not token:
+            logger.warning("No token provided for clone URL %s — clone will likely fail with authentication error", clone_url)
+
         if "://" in clone_url:
             proto, rest = clone_url.split("://", 1)
             self.authenticated_url = f"{proto}://{token}@{rest}"
         else:
             self.authenticated_url = clone_url
+
+        # Log token presence (not the token value itself)
+        logger.info("Clone config: has_token=%s, url_scheme=%s", bool(token), clone_url.split("://")[0] if "://" in clone_url else "unknown")
 
         self.branch = branch
         self.commit_sha = commit_sha
@@ -72,11 +80,28 @@ class WorkspaceGitManager:
         if self.depth > 0:
             clone_kwargs["depth"] = self.depth
 
-        self.repo = git.Repo.clone_from(
-            self.authenticated_url,
-            self.temp_dir,
-            **clone_kwargs,
-        )
+        try:
+            self.repo = git.Repo.clone_from(
+                self.authenticated_url,
+                self.temp_dir,
+                **clone_kwargs,
+            )
+        except git.GitCommandError as e:
+            stderr = getattr(e, "stderr", "") or str(e)
+            if "Authentication failed" in stderr or "403" in stderr or "401" in stderr:
+                raise GitError(
+                    f"Git clone authentication failed for branch '{self.branch}'. "
+                    "The token may be missing, expired, or lacks permissions. "
+                    "Check FORGEJO_TOKEN / GITHUB_TOKEN configuration."
+                ) from e
+            if "not found" in stderr.lower() or "404" in stderr:
+                raise GitError(
+                    f"Repository not found at the provided clone URL (branch='{self.branch}'). "
+                    "Check that the repository and branch exist."
+                ) from e
+            raise GitError(
+                f"Git clone failed for branch '{self.branch}': {stderr[:500]}"
+            ) from e
 
         with self.repo.config_writer() as config:
             config.set_value("user", "name", "CI Review Bot")

@@ -93,13 +93,24 @@ def parse_forgejo_payload(payload: dict[str, Any]) -> WebhookEvent:
         workflow_data = payload.get("workflow", {})
         if isinstance(workflow_data, dict):
             head_sha = workflow_data.get("head_sha", "")
+    if not head_sha:
+        workflow_run = payload.get("workflow_run")
+        if isinstance(workflow_run, dict):
+            head_sha = workflow_run.get("head_sha", "")
 
     status = payload.get("status", "")
     conclusion = payload.get("conclusion", "")
+    if not status and not conclusion:
+        workflow_run = payload.get("workflow_run")
+        if isinstance(workflow_run, dict):
+            status = workflow_run.get("status", "")
+            conclusion = workflow_run.get("conclusion", "")
     if conclusion == "success":
-        status = "completed"
+        if not status:
+            status = "completed"
     elif conclusion in ("failure", "cancelled"):
-        status = "completed"
+        if not status:
+            status = "completed"
 
     # Determine author with fallbacks: sender → workflow_run.trigger_user → workflow_run.sender
     author = sender_data.get("login", "")
@@ -140,12 +151,15 @@ def _parse_forgejo_action_payload(payload: dict[str, Any]) -> WebhookEvent:
     trigger_user = run.get("trigger_user") or {}
     action = payload.get("action", "")
 
-    run_id = str(run.get("id", ""))
-    run_attempt = str(run.get("run_attempt", 1))
-    branch = run.get("prettyref", "")
-    commit_sha = run.get("commit_sha", "")
-    status = run.get("status", "")
-    title = run.get("title", "")
+    run_id = str(run.get("id", "")) or str(payload.get("run_id", ""))
+    run_attempt = str(run.get("run_attempt", 1)) or str(payload.get("run_attempt", "1"))
+    branch = run.get("prettyref", "") or repo_data.get("default_branch", "main")
+    commit_sha = run.get("commit_sha", "") or payload.get("sha", "")
+    if not commit_sha:
+        workflow_data = payload.get("workflow", {})
+        if isinstance(workflow_data, dict):
+            commit_sha = workflow_data.get("head_sha", "")
+    status = run.get("status", "") or action
 
     return WebhookEvent(
         platform=CIPlatform.FORGEJO,

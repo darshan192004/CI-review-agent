@@ -33,6 +33,14 @@ logger = logging.getLogger(__name__)
 _start_time: float = 0.0
 
 
+def _setup_logging() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        force=True,
+    )
+
+
 def _redact_error(msg: str) -> str:
     """Redact tokens, keys, and passwords from error messages."""
     msg = re.sub(r"(ghp_[A-Za-z0-9]{36})", r"[REDACTED]", msg)
@@ -85,6 +93,7 @@ def _check_config_warnings() -> None:
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     global _start_time
+    _setup_logging()
     _start_time = time.monotonic()
     logger.info("CI Review Agent server starting")
     _check_config_warnings()

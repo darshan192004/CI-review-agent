@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from config import settings
-from services.ci_client import CIClient, create_ci_client
+from services.ci_client import create_ci_client
 from services.run_tracker import run_tracker
 
 logger = logging.getLogger(__name__)

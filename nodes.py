@@ -159,19 +159,23 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
     ci_client = _build_ci_client(state)
     mcp_client = _build_mcp_client()
 
-    try:
-        repo = state.get("repository", "")
-        parts = repo.split("/")
-        owner, repo_name = parts[0], parts[1]
-        run_id = state.get("run_id", "")
-        token = settings.github_token if state.get("ci_platform") == "github" else settings.forgejo_token
+    repo = state.get("repository", "")
+    parts = repo.split("/")
+    owner, repo_name = parts[0], parts[1] if len(parts) > 1 else ""
+    run_id = state.get("run_id", "")
+    token = settings.github_token if state.get("ci_platform") == "github" else settings.forgejo_token
+    head_branch = state.get("branch", "main")
+    head_sha = state.get("commit_sha", "")
+    author = state.get("ci_author", "")
 
+    failed_logs: str = ""
+    failure_summary: str = ""
+    source_files: dict[str, str] = {}
+
+    try:
         logger.info(
             "=== FETCHING LOGS === owner=%s repo=%s run_id=%s platform=%s token_present=%s forgejo_base=%s",
-            owner,
-            repo_name,
-            run_id,
-            state.get("ci_platform"),
+            owner, repo_name, run_id, state.get("ci_platform"),
             bool(token),
             settings.forgejo_base_url if state.get("ci_platform") == "forgejo" else "N/A",
         )
@@ -179,126 +183,108 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
         failed_logs = await ci_client.fetch_logs(owner, repo_name, run_id)
         logger.info(
             "=== LOGS FETCHED === run=%s len=%d starts_with=%s",
-            run_id,
-            len(failed_logs) if isinstance(failed_logs, str) else -1,
+            run_id, len(failed_logs) if isinstance(failed_logs, str) else -1,
             (failed_logs[:80] + "...") if isinstance(failed_logs, str) and len(failed_logs) > 80 else failed_logs,
         )
-        preview_len = 500
-        raw_preview = (
-            (failed_logs[:preview_len] + "...")
-            if isinstance(failed_logs, str) and len(failed_logs) > preview_len
-            else failed_logs
-        )
-        logger.info("=== RAW CI LOG PREVIEW (first 500 chars) === %s", raw_preview)
-
-        run_info = await ci_client.get_run_info(owner, repo_name, run_id)
-        author = run_info.get("actor", {}).get("login", "unknown")
-        if author == "unknown":
-            author = run_info.get("trigger_user", {}).get("login", "unknown")
-        head_branch = run_info.get("head_branch", state.get("branch", "unknown"))
-        if head_branch == "unknown":
-            head_branch = run_info.get("prettyref", run_info.get("ref_name", "main"))
-        head_sha = run_info.get("head_sha", state.get("commit_sha", "unknown"))
-        if head_sha == "unknown":
-            head_sha = run_info.get("commit_sha", "")
-
-        failure_summary = _extract_failure_summary(failed_logs)
-
-        clone_url = state.get("repo_info", {}).get("clone_url", "")
-        if not clone_url:
-            clone_url = run_info.get("head_repository", {}).get("clone_url", "")
-        if not clone_url:
-            clone_url = run_info.get("repository", {}).get("clone_url", "")
-        if not clone_url and settings.forgejo_base_url:
-            clone_url = f"{settings.forgejo_base_url.rstrip('/')}/{owner}/{repo_name}.git"
-        token = settings.github_token if state.get("ci_platform") == "github" else settings.forgejo_token
-
-        repo_info = {
-            "name": repo,
-            "clone_url": clone_url,
-            "token": token,
-            "branch": head_branch,
-            "commit_sha": head_sha,
-        }
-
-        source_files: dict[str, str] = {}
-        if clone_url and token:
-            try:
-                import httpx as _httpx
-
-                tree_url = f"{settings.forgejo_base_url.rstrip('/')}/api/v1/repos/{owner}/{repo_name}/git/trees/{head_sha}?recursive=1"
-                logger.info("=== FETCHING SOURCE TREE === url=%s", tree_url)
-                async with _httpx.AsyncClient(timeout=30.0) as hc:
-                    tree_resp = await hc.get(tree_url, headers={"Authorization": f"token {token}"})
-                    if tree_resp.status_code == 200:
-                        tree_data = tree_resp.json()
-                        py_files = [e["path"] for e in tree_data.get("tree", []) if e["type"] == "blob" and e["path"].endswith(".py")]
-                        for fpath in py_files[:15]:
-                            file_url = f"{settings.forgejo_base_url.rstrip('/')}/api/v1/repos/{owner}/{repo_name}/contents/{fpath}?ref={head_sha}"
-                            file_resp = await hc.get(file_url, headers={"Authorization": f"token {token}"})
-                            if file_resp.status_code == 200:
-                                import base64 as _b64
-                                file_data = file_resp.json()
-                                content = _b64.b64decode(file_data["content"]).decode("utf-8", errors="replace")
-                                source_files[fpath] = content
-                        logger.info("=== FETCHED %d SOURCE FILES === files=%s", len(source_files), list(source_files.keys()))
-                    else:
-                        logger.warning("=== SOURCE TREE FETCH FAILED === status=%d", tree_resp.status_code)
-            except Exception as e:
-                logger.warning("Failed to fetch source files (non-fatal): %s", e)
-
-        if not source_files:
-            logger.warning(
-                "=== NO SOURCE FILES FETCHED === LLM will have zero code context. "
-                "Check token permissions, SHA validity, or API connectivity for %s/%s @ %s",
-                owner, repo_name, head_sha,
-            )
-
-        if mcp_client:
-            try:
-                await mcp_client.connect()
-                alert_payload = {
-                    "platform": settings.messaging_platform,
-                    "incident_title": f"CI Failed: {repo} (branch: {head_branch})",
-                    "root_cause": failure_summary,
-                    "resolution_steps": (
-                        f"Automated fix attempt 1/{settings.max_retry_attempts} in progress.\n"
-                        f"Repository: {repo}\n"
-                        f"Branch: {head_branch}\n"
-                        f"Commit: {head_sha}\n"
-                        f"Author: {author}\n"
-                        f"Run ID: {run_id}"
-                    ),
-                }
-                await mcp_client.send_alert(alert_payload)
-            except Exception as e:
-                logger.error("MCP alert failed (non-fatal): %s", e)
-            finally:
-                await mcp_client.disconnect()
-
-        return {
-            "failed_logs": failed_logs,
-            "attempt_count": 0,
-            "ci_author": author,
-            "failure_summary": failure_summary,
-            "commit_sha": head_sha,
-            "branch": head_branch,
-            "repo_info": repo_info,
-            "source_files": source_files,
-            "notifications_sent": [f"Initial alert sent for run {run_id}"],
-        }
     except Exception as e:
         redacted = str(e).replace(settings.github_token or "", "[REDACTED]").replace(settings.forgejo_token or "", "[REDACTED]")
-        logger.error("Failed to fetch logs: %s", e)
-        return {
-            "failed_logs": f"Error fetching logs: {redacted}",
-            "attempt_count": 0,
-            "failure_summary": f"Log fetch error: {redacted}",
-            "repo_info": {},
-            "notifications_sent": [],
-        }
-    finally:
-        await ci_client.close()
+        logger.error("Failed to fetch logs (continuing with state defaults): %s", e)
+        failed_logs = f"Error fetching logs: {redacted}"
+        failure_summary = f"Log fetch error: {redacted}"
+
+    try:
+        if not head_sha or head_sha == "unknown" or not author or author == "unknown":
+            run_info = await ci_client.get_run_info(owner, repo_name, run_id)
+            if author in ("", "unknown"):
+                author = run_info.get("actor", {}).get("login", "") or run_info.get("trigger_user", {}).get("login", "") or state.get("ci_author", "")
+            if head_branch in ("", "unknown"):
+                head_branch = run_info.get("head_branch", "") or run_info.get("prettyref", "") or run_info.get("ref_name", "") or head_branch
+            if head_sha in ("", "unknown"):
+                head_sha = run_info.get("head_sha", "") or run_info.get("commit_sha", "") or head_sha
+    except Exception as e:
+        logger.warning("Failed to fetch run info (continuing with state defaults): %s", e)
+
+    if not failure_summary and failed_logs:
+        failure_summary = _extract_failure_summary(failed_logs)
+
+    clone_url = state.get("repo_info", {}).get("clone_url", "")
+    if not clone_url and settings.forgejo_base_url:
+        clone_url = f"{settings.forgejo_base_url.rstrip('/')}/{owner}/{repo_name}.git"
+
+    repo_info = {
+        "name": repo,
+        "clone_url": clone_url,
+        "token": token,
+        "branch": head_branch,
+        "commit_sha": head_sha,
+    }
+
+    if head_sha and token:
+        try:
+            import httpx as _httpx
+
+            tree_url = f"{settings.forgejo_base_url.rstrip('/')}/api/v1/repos/{owner}/{repo_name}/git/trees/{head_sha}?recursive=1"
+            logger.info("=== FETCHING SOURCE TREE === url=%s", tree_url)
+            async with _httpx.AsyncClient(timeout=30.0) as hc:
+                tree_resp = await hc.get(tree_url, headers={"Authorization": f"token {token}"})
+                if tree_resp.status_code == 200:
+                    tree_data = tree_resp.json()
+                    py_files = [e["path"] for e in tree_data.get("tree", []) if e["type"] == "blob" and e["path"].endswith(".py")]
+                    for fpath in py_files[:15]:
+                        file_url = f"{settings.forgejo_base_url.rstrip('/')}/api/v1/repos/{owner}/{repo_name}/contents/{fpath}?ref={head_sha}"
+                        file_resp = await hc.get(file_url, headers={"Authorization": f"token {token}"})
+                        if file_resp.status_code == 200:
+                            import base64 as _b64
+                            file_data = file_resp.json()
+                            content = _b64.b64decode(file_data["content"]).decode("utf-8", errors="replace")
+                            source_files[fpath] = content
+                    logger.info("=== FETCHED %d SOURCE FILES === files=%s", len(source_files), list(source_files.keys()))
+                else:
+                    logger.warning("=== SOURCE TREE FETCH FAILED === status=%d", tree_resp.status_code)
+        except Exception as e:
+            logger.warning("Failed to fetch source files (non-fatal): %s", e)
+
+    if not source_files:
+        logger.warning(
+            "=== NO SOURCE FILES FETCHED === LLM will have zero code context. "
+            "Check token permissions, SHA validity, or API connectivity for %s/%s @ %s",
+            owner, repo_name, head_sha,
+        )
+
+    if mcp_client:
+        try:
+            await mcp_client.connect()
+            alert_payload = {
+                "platform": settings.messaging_platform,
+                "incident_title": f"CI Failed: {repo} (branch: {head_branch})",
+                "root_cause": failure_summary or "Unknown failure",
+                "resolution_steps": (
+                    f"Automated fix attempt 1/{settings.max_retry_attempts} in progress.\n"
+                    f"Repository: {repo}\n"
+                    f"Branch: {head_branch}\n"
+                    f"Commit: {head_sha}\n"
+                    f"Author: {author}\n"
+                    f"Run ID: {run_id}"
+                ),
+            }
+            await mcp_client.send_alert(alert_payload)
+        except Exception as e:
+            logger.error("MCP alert failed (non-fatal): %s", e)
+        finally:
+            await mcp_client.disconnect()
+
+    await ci_client.close()
+    return {
+        "failed_logs": failed_logs,
+        "attempt_count": 0,
+        "ci_author": author,
+        "failure_summary": failure_summary,
+        "commit_sha": head_sha,
+        "branch": head_branch,
+        "repo_info": repo_info,
+        "source_files": source_files,
+        "notifications_sent": [f"Initial alert sent for run {run_id}"],
+    }
 
 
 async def node_llm_fix_code(state: AgentState) -> dict[str, Any]:
@@ -501,10 +487,10 @@ async def node_poll_ci_status(state: AgentState) -> dict[str, Any]:
     logger.info("Waiting for CI via webhook: %s @ %s", repo, commit_sha[:12] if commit_sha else "?")
 
     if not commit_sha:
-        logger.warning("No commit_sha in state — cannot wait for CI webhook")
+        logger.warning("No commit_sha in state — cannot wait for CI webhook. Escalating.")
         return {
-            "ci_status": "FAILED",
-            "notifications_sent": ["No commit_sha available for CI waiter"],
+            "ci_status": "CANNOT_FIX",
+            "notifications_sent": ["No commit_sha available for CI waiter — cannot poll CI status"],
         }
 
     result = await wait_for_ci(repo, commit_sha, timeout=600)

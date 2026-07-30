@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import shutil
 import tempfile
 from typing import Any
@@ -55,7 +54,11 @@ class WorkspaceGitManager:
         if not clone_url:
             raise GitError("No clone URL provided — cannot clone repository")
         if not token:
-            logger.warning("No token provided for clone URL %s — clone will likely fail with authentication error", clone_url)
+            logger.warning(
+                "No token provided for clone URL %s — clone will likely fail "
+                "with authentication error",
+                clone_url,
+            )
 
         if "://" in clone_url:
             proto, rest = clone_url.split("://", 1)
@@ -63,8 +66,8 @@ class WorkspaceGitManager:
         else:
             self.authenticated_url = clone_url
 
-        # Log token presence (not the token value itself)
-        logger.info("Clone config: has_token=%s, url_scheme=%s", bool(token), clone_url.split("://")[0] if "://" in clone_url else "unknown")
+        url_scheme = clone_url.split("://")[0] if "://" in clone_url else "unknown"
+        logger.info("Clone config: has_token=%s, url_scheme=%s", bool(token), url_scheme)
 
         self.branch = branch
         self.commit_sha = commit_sha

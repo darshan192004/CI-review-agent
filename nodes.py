@@ -183,8 +183,12 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
             len(failed_logs) if isinstance(failed_logs, str) else -1,
             (failed_logs[:80] + "...") if isinstance(failed_logs, str) and len(failed_logs) > 80 else failed_logs,
         )
-        # Diagnostic: print raw CI log snippet before passing to LLM
-        raw_preview = (failed_logs[:500] + "...") if isinstance(failed_logs, str) and len(failed_logs) > 500 else failed_logs
+        preview_len = 500
+        raw_preview = (
+            (failed_logs[:preview_len] + "...")
+            if isinstance(failed_logs, str) and len(failed_logs) > preview_len
+            else failed_logs
+        )
         logger.info("=== RAW CI LOG PREVIEW (first 500 chars) === %s", raw_preview)
 
         run_info = await ci_client.get_run_info(owner, repo_name, run_id)

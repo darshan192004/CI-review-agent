@@ -9,7 +9,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from config import settings
 from services.ci_client import CIClient, create_ci_client
-from services.git_manager import WorkspaceGitManager
+from services.git_manager import GitError, WorkspaceGitManager
 from services.mcp_client import MCPClient
 from state import AgentState, RepairAnalysis
 
@@ -183,6 +183,9 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
             len(failed_logs) if isinstance(failed_logs, str) else -1,
             (failed_logs[:80] + "...") if isinstance(failed_logs, str) and len(failed_logs) > 80 else failed_logs,
         )
+        # Diagnostic: print raw CI log snippet before passing to LLM
+        raw_preview = (failed_logs[:500] + "...") if isinstance(failed_logs, str) and len(failed_logs) > 500 else failed_logs
+        logger.info("=== RAW CI LOG PREVIEW (first 500 chars) === %s", raw_preview)
 
         run_info = await ci_client.get_run_info(owner, repo_name, run_id)
         author = run_info.get("actor", {}).get("login", "unknown")
@@ -239,6 +242,13 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
                         logger.warning("=== SOURCE TREE FETCH FAILED === status=%d", tree_resp.status_code)
             except Exception as e:
                 logger.warning("Failed to fetch source files (non-fatal): %s", e)
+
+        if not source_files:
+            logger.warning(
+                "=== NO SOURCE FILES FETCHED === LLM will have zero code context. "
+                "Check token permissions, SHA validity, or API connectivity for %s/%s @ %s",
+                owner, repo_name, head_sha,
+            )
 
         if mcp_client:
             try:
@@ -329,7 +339,16 @@ async def node_llm_fix_code(state: AgentState) -> dict[str, Any]:
         "- NEVER modify infrastructure-as-code files (*.tf, *.tfvars, terragrunt.hcl)\n"
         "- NEVER modify .gitignore or any git-related config files\n"
         "- Only modify application source code files (.py, .js, .ts, .java, .go, .rs, etc.)\n"
-        "- Keep changes minimal and focused on the root cause of the CI failure"
+        "- Keep changes minimal and focused on the root cause of the CI failure\n\n"
+        "INFRASTRUCTURE ERROR DETECTION:\n"
+        "- If the CI log indicates an infrastructure issue (authentication failure, "
+        "credential error, git clone failure, permission denied, missing token, "
+        "runner misconfiguration, network timeout, or DNS resolution error), "
+        "do NOT attempt to write code to fix it.\n"
+        "- Instead, set modified_files to an empty list and set explanation to "
+        "'INFRASTRUCTURE_ERROR: <describe the specific infrastructure issue>'\n"
+        "- Code changes cannot fix missing credentials, expired tokens, or "
+        "misconfigured CI runners — these require human infrastructure intervention."
     )
 
     user_prompt = f"""Repository: {state.get("repository", "unknown")}
@@ -344,6 +363,28 @@ SOURCE CODE:
 {previous_context}
 
 Analyze the failure and provide a fix as JSON."""
+
+    # Gate: if no source files are available, the LLM cannot produce a correct fix.
+    # Skip the LLM call and escalate to human to prevent hallucination.
+    if not source_files:
+        logger.warning(
+            "=== SKIPPING LLM FIX === source_files is empty (attempt %d/%d). "
+            "No code context available — cannot attempt fix.",
+            attempt,
+            settings.max_retry_attempts,
+        )
+        return {
+            "explanation": (
+                "No source files available for analysis. The LLM cannot produce a "
+                "correct fix without repository code context. This may be caused by "
+                "authentication/connectivity issues with the CI provider API. "
+                "Human intervention required."
+            ),
+            "patch_applied": False,
+            "ci_status": "CANNOT_FIX",
+            "attempt_count": attempt + 1,
+            "notifications_sent": ["No source files available — cannot attempt fix"],
+        }
 
     llm = _get_llm()
     structured_llm = llm.with_structured_output(RepairAnalysis)
@@ -423,6 +464,15 @@ Analyze the failure and provide a fix as JSON."""
             "notifications_sent": [f"Patch applied: {success}"],
         }
 
+    except GitError as e:
+        logger.error("Git operation failed — cannot apply fix: %s", e)
+        return {
+            "explanation": f"INFRASTRUCTURE_ERROR: {e}",
+            "patch_applied": False,
+            "ci_status": "CANNOT_FIX",
+            "attempt_count": attempt,
+            "notifications_sent": [f"Git operation failed: {e}"],
+        }
     except Exception as e:
         redacted = str(e).replace(settings.github_token or "", "[REDACTED]").replace(settings.forgejo_token or "", "[REDACTED]")
         logger.error("LLM fix generation failed: %s", e)

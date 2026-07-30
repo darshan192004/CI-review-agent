@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import traceback
 
 from config import settings
 from main import run_agent
@@ -125,6 +126,40 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
         author=event.author,
     )
 
+    # Only invoke the agent on actual CI failures
+    # Forgejo action payloads: action field is the status (failure/success)
+    # Forgejo/GitHub workflow_run events: action="completed" + conclusion="failure"
+    is_failure = (
+        event.action == "failure"
+        or event.status in ("failure", "FAILED", "error")
+        or (event.action == "completed" and event.conclusion == "failure")
+        or (event.action == "completed" and not event.conclusion)
+    )
+    if not is_failure:
+        logger.info(
+            "Skipping agent — event is not a CI failure (action=%s, conclusion=%s, status=%s) "
+            "for repo=%s run=%s.",
+            event.action,
+            event.conclusion,
+            event.status,
+            repository,
+            run_id,
+        )
+        broadcast_event(
+            task_key=f"{repository}:{run_id}:{run_attempt}",
+            status=event_status,
+            meta={
+                "repository": repository,
+                "run_id": run_id,
+                "run_attempt": run_attempt,
+                "platform": event.platform.value,
+                "branch": event.branch or event.repository.default_branch,
+                "commit_sha": event.commit_sha,
+                "author": event.author,
+            },
+        )
+        return
+
     source_files: dict[str, str] = {}
 
     initial_state: AgentState = {
@@ -226,7 +261,7 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
             final_status,
         )
     except Exception as e:
-        logger.error("Agent failed for %s run %s: %s", repository, run_id, e)
+        logger.error("Agent failed for %s run %s: %s\n%s", repository, run_id, e, traceback.format_exc())
         await run_tracker.update_status(repository, run_id, status="error", run_attempt=run_attempt)
         broadcast_event(
             task_key=task_key,
@@ -253,9 +288,12 @@ def dispatch_webhook_event(event: WebhookEvent) -> None:
         logger.warning("Task %s already running, skipping", task_key)
         return
 
-    task = asyncio.create_task(handle_webhook_event(event))
-    _active_tasks[task_key] = task
-    logger.info("Dispatched background task for %s", task_key)
+    try:
+        task = asyncio.create_task(handle_webhook_event(event))
+        _active_tasks[task_key] = task
+        logger.info("Dispatched background task for %s", task_key)
+    except Exception as e:
+        logger.error("Failed to create background task for %s: %s", task_key, e)
 
 
 def get_active_task_count() -> int:

@@ -50,6 +50,7 @@ class WebhookEvent(BaseModel):
     run_id: str = ""
     run_attempt: str = "1"
     status: str = ""
+    conclusion: str = ""
     author: str = ""
 
 
@@ -128,6 +129,7 @@ def parse_forgejo_payload(payload: dict[str, Any]) -> WebhookEvent:
         run_id=run_id,
         run_attempt=run_attempt,
         status=status,
+        conclusion=conclusion,
         author=author,
     )
 
@@ -163,6 +165,7 @@ def _parse_forgejo_action_payload(payload: dict[str, Any]) -> WebhookEvent:
         run_id=run_id,
         run_attempt=run_attempt,
         status=status,
+        conclusion=action,
         author=trigger_user.get("login", ""),
     )
 
@@ -198,6 +201,7 @@ def parse_github_workflow_run(payload: dict[str, Any]) -> WebhookEvent:
         run_id=run_id,
         run_attempt=run_attempt,
         status=status,
+        conclusion=conclusion,
         author=sender_data.get("login", ""),
     )
 

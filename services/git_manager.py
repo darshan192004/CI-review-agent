@@ -156,6 +156,11 @@ class WorkspaceGitManager:
                 return True
         return False
 
+    def get_head_sha(self) -> str:
+        if self.repo is None:
+            raise GitError("Repository not cloned yet")
+        return self.repo.head.commit.hexsha
+
     def commit_and_push(self, commit_message: str) -> bool:
         """Stages all changes, creates a commit, and pushes to remote.
         Only pushes to the original branch set at clone time (branch isolation)."""

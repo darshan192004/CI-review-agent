@@ -29,21 +29,6 @@ class CIClient(abc.ABC):
     async def fetch_logs(self, owner: str, repo: str, run_id: str) -> str: ...
 
     @abc.abstractmethod
-    async def trigger_workflow(
-        self, owner: str, repo: str, workflow_id: str, branch: str, commit_sha: str
-    ) -> str: ...
-
-    @abc.abstractmethod
-    async def poll_status(
-        self,
-        owner: str,
-        repo: str,
-        run_id: str,
-        interval: int = 30,
-        max_wait: int = 600,
-    ) -> str: ...
-
-    @abc.abstractmethod
     async def get_run_info(
         self, owner: str, repo: str, run_id: str
     ) -> dict[str, Any]: ...
@@ -52,10 +37,6 @@ class CIClient(abc.ABC):
     async def list_runs(
         self, owner: str, repo: str, branch: str, limit: int = 1
     ) -> list[dict[str, Any]]: ...
-
-    @abc.abstractmethod
-    async def list_repos(self, org: str) -> list[str]: ...
-
 
 class GitHubCIClient(CIClient):
     def _headers(self) -> dict[str, str]:
@@ -96,47 +77,6 @@ class GitHubCIClient(CIClient):
         return parse_ci_logs(raw)
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
-    async def trigger_workflow(
-        self, owner: str, repo: str, workflow_id: str, branch: str, commit_sha: str
-    ) -> str:
-        url = f"{self.base_url}/repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches"
-        payload = {"ref": branch, "inputs": {"commit_sha": commit_sha}}
-        resp = await self._client.post(url, json=payload, headers=self._headers())
-        if resp.status_code == 204:
-            logger.info("Triggered workflow %s on %s/%s", workflow_id, owner, repo)
-            return f"Triggered workflow {workflow_id}"
-        resp.raise_for_status()
-        return resp.text
-
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
-    async def poll_status(
-        self,
-        owner: str,
-        repo: str,
-        run_id: str,
-        interval: int = 30,
-        max_wait: int = 600,
-    ) -> str:
-        import asyncio
-
-        url = f"{self.base_url}/repos/{owner}/{repo}/actions/runs/{run_id}"
-        elapsed = 0
-        while elapsed < max_wait:
-            resp = await self._client.get(url, headers=self._headers())
-            resp.raise_for_status()
-            data = resp.json()
-            status = data.get("status", "unknown")
-            conclusion = data.get("conclusion", "")
-
-            if status == "completed":
-                return "PASSED" if conclusion == "success" else "FAILED"
-
-            await asyncio.sleep(interval)
-            elapsed += interval
-
-        raise CIClientError(f"CI run {run_id} did not complete within {max_wait}s")
-
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     async def get_run_info(self, owner: str, repo: str, run_id: str) -> dict[str, Any]:
         url = f"{self.base_url}/repos/{owner}/{repo}/actions/runs/{run_id}"
         resp = await self._client.get(url, headers=self._headers())
@@ -152,15 +92,6 @@ class GitHubCIClient(CIClient):
         resp = await self._client.get(url, headers=self._headers(), params=params)
         resp.raise_for_status()
         return resp.json().get("workflow_runs", [])
-
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
-    async def list_repos(self, org: str) -> list[str]:
-        url = f"{self.base_url}/orgs/{org}/repos"
-        params = {"per_page": 100, "type": "all"}
-        resp = await self._client.get(url, headers=self._headers(), params=params)
-        resp.raise_for_status()
-        return [r["full_name"] for r in resp.json()]
-
 
 class ForgejoCIClient(CIClient):
     def _headers(self) -> dict[str, str]:
@@ -193,52 +124,6 @@ class ForgejoCIClient(CIClient):
         return "No failure details found"
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
-    async def trigger_workflow(
-        self, owner: str, repo: str, workflow_id: str, branch: str, commit_sha: str
-    ) -> str:
-        url = f"{self.base_url}/api/v1/repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches"
-        payload = {"ref": branch}
-        resp = await self._client.post(url, json=payload, headers=self._headers())
-        resp.raise_for_status()
-        logger.info("Triggered Forgejo workflow %s on %s/%s", workflow_id, owner, repo)
-        return f"Triggered workflow {workflow_id}"
-
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
-    async def poll_status(
-        self,
-        owner: str,
-        repo: str,
-        run_id: str,
-        interval: int = 30,
-        max_wait: int = 600,
-    ) -> str:
-        import asyncio
-
-        _FORGEJO_TERMINAL_STATUSES = frozenset({"success", "failure", "cancelled", "skipped"})
-
-        url = f"{self.base_url}/api/v1/repos/{owner}/{repo}/actions/runs/{run_id}"
-        elapsed = 0
-        while elapsed < max_wait:
-            resp = await self._client.get(url, headers=self._headers())
-            resp.raise_for_status()
-            data = resp.json()
-            status = data.get("status", "unknown")
-
-            # GitHub format: status="completed" + conclusion
-            if status == "completed":
-                conclusion = data.get("conclusion", "")
-                return "PASSED" if conclusion == "success" else "FAILED"
-
-            # Forgejo format: status directly set to terminal value
-            if status in _FORGEJO_TERMINAL_STATUSES:
-                return "PASSED" if status == "success" else "FAILED"
-
-            await asyncio.sleep(interval)
-            elapsed += interval
-
-        raise CIClientError(f"Forgejo run {run_id} did not complete within {max_wait}s")
-
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     async def get_run_info(self, owner: str, repo: str, run_id: str) -> dict[str, Any]:
         url = f"{self.base_url}/api/v1/repos/{owner}/{repo}/actions/runs/{run_id}"
         resp = await self._client.get(url, headers=self._headers())
@@ -254,24 +139,6 @@ class ForgejoCIClient(CIClient):
         resp = await self._client.get(url, headers=self._headers(), params=params)
         resp.raise_for_status()
         return resp.json().get("workflow_runs", [])
-
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
-    async def list_repos(self, org: str) -> list[str]:
-        try:
-            url = f"{self.base_url}/api/v1/orgs/{org}/repos"
-            params = {"limit": 100}
-            resp = await self._client.get(url, headers=self._headers(), params=params)
-            resp.raise_for_status()
-            return [r["full_name"] for r in resp.json()]
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code != 404:
-                raise
-        url = f"{self.base_url}/api/v1/users/{org}/repos"
-        params = {"limit": 100}
-        resp = await self._client.get(url, headers=self._headers(), params=params)
-        resp.raise_for_status()
-        return [r["full_name"] for r in resp.json()]
-
 
 def create_ci_client(platform: str, token: str, base_url: str) -> CIClient:
     if platform == "github":

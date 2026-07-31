@@ -8,6 +8,8 @@ from typing import Any
 
 import git
 
+from config import settings
+
 logger = logging.getLogger(__name__)
 
 FORBIDDEN_PATHS: tuple[str, ...] = (
@@ -107,8 +109,12 @@ class WorkspaceGitManager:
             ) from e
 
         with self.repo.config_writer() as config:
-            config.set_value("user", "name", "CI Review Bot")
-            config.set_value("user", "email", "ci-bot@autofix.internal")
+            config.set_value(
+                "user", "name", settings.ci_bot_username or "CI Review Bot"
+            )
+            config.set_value(
+                "user", "email", settings.ci_bot_email or "ci-bot@autofix.internal"
+            )
 
         logger.info("Cloned %s (branch=%s, depth=%s)", self.branch, self.branch, self.depth)
         return self

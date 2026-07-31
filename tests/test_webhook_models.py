@@ -154,3 +154,70 @@ class TestParseForgejoActionPayload:
         assert event.repository.full_name == "testadmin/test-failing-ci"
         assert event.status == "failure"
         assert event.author == "testadmin"
+
+    def test_action_payload_extracts_commit_author_from_event_payload(self) -> None:
+        # Real Forgejo action_run payloads serialize the raw push event as a
+        # JSON string in run.event_payload; commit author is NOT top-level.
+        event_payload = {
+            "ref": "refs/heads/main",
+            "head_commit": {
+                "id": "abc123def456",
+                "author": {
+                    "name": "CI Review Bot",
+                    "email": "ci-bot@autofix.internal",
+                    "username": "",
+                },
+            },
+        }
+        payload = {
+            **FORGEJO_ACTION_PAYLOAD,
+            "run": {
+                **FORGEJO_ACTION_PAYLOAD["run"],
+                "event_payload": json.dumps(event_payload),
+            },
+        }
+        event = parse_webhook_payload(CIPlatform.FORGEJO, payload)
+        assert event.commit_author == "CI Review Bot"
+        assert event.commit_author_email == "ci-bot@autofix.internal"
+        # The pusher account is not the author — must stay distinct.
+        assert event.author == "testadmin"
+
+    def test_action_payload_extracts_human_commit_author(self) -> None:
+        event_payload = {
+            "ref": "refs/heads/main",
+            "head_commit": {
+                "id": "abc123def456",
+                "author": {
+                    "name": "Darshan Parmar",
+                    "email": "darshan@example.com",
+                    "username": "",
+                },
+            },
+        }
+        payload = {
+            **FORGEJO_ACTION_PAYLOAD,
+            "run": {
+                **FORGEJO_ACTION_PAYLOAD["run"],
+                "event_payload": json.dumps(event_payload),
+            },
+        }
+        event = parse_webhook_payload(CIPlatform.FORGEJO, payload)
+        assert event.commit_author == "Darshan Parmar"
+        assert event.commit_author_email == "darshan@example.com"
+
+    def test_action_payload_malformed_event_payload(self) -> None:
+        payload = {
+            **FORGEJO_ACTION_PAYLOAD,
+            "run": {
+                **FORGEJO_ACTION_PAYLOAD["run"],
+                "event_payload": "{not valid json",
+            },
+        }
+        event = parse_webhook_payload(CIPlatform.FORGEJO, payload)
+        assert event.commit_author == ""
+        assert event.commit_author_email == ""
+
+    def test_action_payload_without_event_payload(self) -> None:
+        event = parse_webhook_payload(CIPlatform.FORGEJO, FORGEJO_ACTION_PAYLOAD)
+        assert event.commit_author == ""
+        assert event.commit_author_email == ""

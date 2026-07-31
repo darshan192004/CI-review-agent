@@ -41,6 +41,11 @@ class CIClient(abc.ABC):
     @abc.abstractmethod
     async def list_repos(self, org: str) -> list[str]: ...
 
+    @abc.abstractmethod
+    async def get_commit_author(
+        self, owner: str, repo: str, commit_sha: str
+    ) -> tuple[str, str]: ...
+
 class GitHubCIClient(CIClient):
     def _headers(self) -> dict[str, str]:
         return {
@@ -80,6 +85,21 @@ class GitHubCIClient(CIClient):
         return parse_ci_logs(raw)
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    async def get_commit_author(self, owner: str, repo: str, commit_sha: str) -> tuple[str, str]:
+        """Get the author name and email for a specific commit."""
+        url = f"{self.base_url}/repos/{owner}/{repo}/commits/{commit_sha}"
+        logger.info("=== GITHUB API: GET commit === url=%s", url)
+        resp = await self._client.get(url, headers=self._headers())
+        logger.info("=== GITHUB API: commit response === status=%d", resp.status_code)
+        resp.raise_for_status()
+        commit_data = resp.json()
+        author = commit_data.get("author", {})
+        author_name = author.get("name", "") if author else ""
+        author_email = author.get("email", "") if author else ""
+        logger.info("=== COMMIT AUTHOR === commit=%s author=%s email=%s", commit_sha, author_name, author_email)
+        return author_name, author_email
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     async def get_run_info(self, owner: str, repo: str, run_id: str) -> dict[str, Any]:
         url = f"{self.base_url}/repos/{owner}/{repo}/actions/runs/{run_id}"
         resp = await self._client.get(url, headers=self._headers())
@@ -110,6 +130,24 @@ class ForgejoCIClient(CIClient):
             "Authorization": f"token {self.token}",
             "Accept": "application/json",
         }
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    async def get_commit_author(self, owner: str, repo: str, commit_sha: str) -> tuple[str, str]:
+        """Get the author name and email for a specific commit."""
+        url = f"{self.base_url}/api/v1/repos/{owner}/{repo}/git/commits/{commit_sha}"
+        logger.info("=== FORGEJO API: GET commit === url=%s", url)
+        resp = await self._client.get(url, headers=self._headers())
+        logger.info("=== FORGEJO API: commit response === status=%d", resp.status_code)
+        resp.raise_for_status()
+        commit_data = resp.json()
+        # Forgejo's git-commit API nests the author under `commit.author`
+        # (top-level `author` is null for non-user commits).
+        commit_obj = commit_data.get("commit", {}) or {}
+        author = commit_obj.get("author", {}) or {}
+        author_name = author.get("name", "")
+        author_email = author.get("email", "")
+        logger.info("=== COMMIT AUTHOR === commit=%s author=%s email=%s", commit_sha, author_name, author_email)
+        return author_name, author_email
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     async def fetch_logs(self, owner: str, repo: str, run_id: str) -> str:

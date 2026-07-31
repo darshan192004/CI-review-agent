@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from typing import Any
@@ -11,7 +12,7 @@ from config import settings
 from services.ci_client import CIClient, create_ci_client
 from services.git_manager import GitError, WorkspaceGitManager
 from services.mcp_client import MCPClient
-from state import AgentState, RepairAnalysis
+from state import AgentState, FileFix, RepairAnalysis
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +155,140 @@ def _extract_failure_summary(logs: str) -> str:
     return logs[:200] if logs else "Unknown failure"
 
 
+_INFRASTRUCTURE_ERROR_PATTERNS = [
+    r"authentication\s+(failed|error)",
+    r"authentication\s+failed",
+    r"credential",  # credentials/credential error
+    r"could not read username",  # git prompting for creds
+    r"terminal prompts disabled",
+    r"access\s+denied",
+    r"(?:permission\s+)?denied\s+to\b",  # "permission denied to <user>"
+    r"repository\s+not\s+found",
+    r"does not appear to be a git repository",
+    r"could not resolve host",  # DNS failure
+    r"name or service not known",
+    r"connection\s+(refused|reset|timed out|timed-out)",
+    r"failed\s+to\s+connect\s+to",  # e.g. "Failed to connect to localhost port 3000"
+    r"couldn'?t\s+connect\s+to\s+(server|localhost|host)",
+    r"unable\s+to\s+access",  # git: "unable to access 'url'"
+    r"network\s+is\s+unreachable",
+    r"ssl.*(error|certificate)",
+    r"remote: Invalid username or password",
+    r"remote: Authentication failed",
+    r"(?:missing|no)\s+token",
+    r"token.*(invalid|expired|revoked)",
+    r"runner\s+misconfigur",
+    r"no\s+runner.*online",
+    r"unable to access.*clone",
+    r"fatal: could not read from remote",
+]
+
+
+def _detect_infrastructure_error(logs: str) -> str:
+    """Deterministically detect infrastructure-level CI failures.
+
+    Infrastructure failures (git clone/auth, missing credentials, offline
+    runners, network errors) cannot be fixed by editing source code. Returning
+    a non-empty description lets the agent skip the LLM and escalate instead of
+    hallucinating code changes.
+    """
+    if not logs:
+        return ""
+    normalized = logs.lower()
+    for pattern in _INFRASTRUCTURE_ERROR_PATTERNS:
+        match = re.search(pattern, normalized)
+        if match:
+            return match.group(0)
+    return ""
+
+
+async def node_clone_repository(state: AgentState) -> dict[str, Any]:
+    """Clone repository to local workspace.
+    Exit early if clone fails to prevent hallucination on empty workspace.
+    """
+    from services.git_manager import GitError, WorkspaceGitManager
+    logger.info("Cloning repository for %s run %s", state.get("repository", ""), state.get("run_id"))
+
+    repo = state.get("repository", "")
+    parts = repo.split("/")
+    owner, repo_name = parts[0], parts[1] if len(parts) > 1 else ""
+
+    # Need both forgejo_token or github_token for authentication
+    platform = state.get("ci_platform", "github")
+    token = settings.forgejo_token if platform == "forgejo" else settings.github_token
+    if not token:
+        error_msg = f"No authentication token for {platform} platform"
+        logger.error("=== CLONE BLOCK: %s ===", error_msg)
+        return {
+            "ci_status": "CANNOT_FIX",
+            "clone_error": error_msg,
+            "failure_summary": f"INFRASTRUCTURE_ERROR: {error_msg}",
+            "notifications_sent": ["Missing CI provider token"],
+        }
+
+    # Build clone URL using Forgejo base_url for Forgejo platform
+    clone_url = ""
+    if platform == "forgejo" and settings.forgejo_base_url:
+        # Forgejo API expects http://localhost:3000/owner/repo.git
+        # Use the same pattern as CI client: settings.forgejo_base_url + "/" + owner + "/" + repo_name + ".git"
+        clone_url = f"{settings.forgejo_base_url.rstrip('/')}/{owner}/{repo_name}.git"
+    elif platform == "github":
+        clone_url = f"https://github.com/{owner}/{repo_name}.git"
+    else:
+        error_msg = f"Unsupported CI platform: {platform}"
+        logger.error("=== CLONE BLOCK: %s ===", error_msg)
+        return {
+            "ci_status": "CANNOT_FIX",
+            "clone_error": error_msg,
+            "failure_summary": f"INFRASTRUCTURE_ERROR: {error_msg}",
+            "notifications_sent": ["Unsupported CI platform"],
+        }
+
+    try:
+        with WorkspaceGitManager(
+            clone_url=clone_url,
+            token=token,
+            branch=state.get("branch", "main"),
+            commit_sha=state.get("commit_sha", ""),
+            depth=settings.git_clone_depth,
+        ) as git_ws:
+            # Success: capture workspace directory for later use
+            logger.info("Repository cloned successfully: workspace=%s", git_ws.temp_dir)
+            return {
+                "workspace_dir": git_ws.temp_dir,
+                "clone_url": clone_url,
+                "repo_info": {
+                    "temp_dir": git_ws.temp_dir,
+                    "clone_url": clone_url,
+                    "token": token,
+                    "branch": state.get("branch", "main"),
+                    "commit_sha": state.get("commit_sha", ""),
+                },
+                "ci_status": "RUNNING",
+            }
+    except GitError as e:
+        logger.error("=== CLONE FAILED: %s ===", e)
+        return {
+            "ci_status": "CANNOT_FIX",
+            "clone_error": str(e),
+            "failure_summary": f"INFRASTRUCTURE_ERROR: Git clone failed — {e}",
+            "notifications_sent": ["Repository clone failed"],
+        }
+    except Exception as e:
+        redacted = str(e).replace(settings.github_token or "", "[REDACTED]").replace(
+            settings.forgejo_token or "", "[REDACTED]"
+        )
+        logger.error("=== CLONE ERROR (unexpected): %s ===", e)
+        return {
+            "ci_status": "CANNOT_FIX",
+            "clone_error": redacted,
+            "failure_summary": f"INFRASTRUCTURE_ERROR: Clone error — {redacted}",
+            "notifications_sent": ["Repository clone error"],
+        }
+
+
+
+
 async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
     logger.info("Fetching CI logs for run %s", state.get("run_id"))
     ci_client = _build_ci_client(state)
@@ -172,6 +307,12 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
     failure_summary: str = ""
     source_files: dict[str, str] = {}
 
+    # If we have a workspace, mark it ready for LLM context
+    repo_info = state.get("repo_info", {})
+    cloned_temp_dir = repo_info.get("temp_dir") if repo_info else None
+    if cloned_temp_dir:
+        logger.info("Using existing workspace: %s", cloned_temp_dir)
+
     try:
         logger.info(
             "=== FETCHING LOGS === owner=%s repo=%s run_id=%s platform=%s token_present=%s forgejo_base=%s",
@@ -187,7 +328,9 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
             (failed_logs[:80] + "...") if isinstance(failed_logs, str) and len(failed_logs) > 80 else failed_logs,
         )
     except Exception as e:
-        redacted = str(e).replace(settings.github_token or "", "[REDACTED]").replace(settings.forgejo_token or "", "[REDACTED]")
+        redacted = str(e).replace(settings.github_token or "", "[REDACTED]").replace(
+            settings.forgejo_token or "", "[REDACTED]"
+        )
         logger.error("Failed to fetch logs (continuing with state defaults): %s", e)
         failed_logs = f"Error fetching logs: {redacted}"
         failure_summary = f"Log fetch error: {redacted}"
@@ -196,9 +339,18 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
         if not head_sha or head_sha == "unknown" or not author or author == "unknown":
             run_info = await ci_client.get_run_info(owner, repo_name, run_id)
             if author in ("", "unknown"):
-                author = run_info.get("actor", {}).get("login", "") or run_info.get("trigger_user", {}).get("login", "") or state.get("ci_author", "")
+                author = (
+                    run_info.get("actor", {}).get("login", "")
+                    or run_info.get("trigger_user", {}).get("login", "")
+                    or state.get("ci_author", "")
+                )
             if head_branch in ("", "unknown"):
-                head_branch = run_info.get("head_branch", "") or run_info.get("prettyref", "") or run_info.get("ref_name", "") or head_branch
+                head_branch = (
+                    run_info.get("head_branch", "")
+                    or run_info.get("prettyref", "")
+                    or run_info.get("ref_name", "")
+                    or head_branch
+                )
             if head_sha in ("", "unknown"):
                 head_sha = run_info.get("head_sha", "") or run_info.get("commit_sha", "") or head_sha
     except Exception as e:
@@ -223,22 +375,37 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
         try:
             import httpx as _httpx
 
-            tree_url = f"{settings.forgejo_base_url.rstrip('/')}/api/v1/repos/{owner}/{repo_name}/git/trees/{head_sha}?recursive=1"
+            base = settings.forgejo_base_url.rstrip("/")
+            tree_url = (
+                f"{base}/api/v1/repos/{owner}/{repo_name}"
+                f"/git/trees/{head_sha}?recursive=1"
+            )
             logger.info("=== FETCHING SOURCE TREE === url=%s", tree_url)
             async with _httpx.AsyncClient(timeout=30.0) as hc:
                 tree_resp = await hc.get(tree_url, headers={"Authorization": f"token {token}"})
                 if tree_resp.status_code == 200:
                     tree_data = tree_resp.json()
-                    py_files = [e["path"] for e in tree_data.get("tree", []) if e["type"] == "blob" and e["path"].endswith(".py")]
+                    py_files = [
+                        e["path"]
+                        for e in tree_data.get("tree", [])
+                        if e["type"] == "blob" and e["path"].endswith(".py")
+                    ]
                     for fpath in py_files[:15]:
-                        file_url = f"{settings.forgejo_base_url.rstrip('/')}/api/v1/repos/{owner}/{repo_name}/contents/{fpath}?ref={head_sha}"
+                        file_url = (
+                            f"{base}/api/v1/repos/{owner}/{repo_name}/contents/{fpath}"
+                            f"?ref={head_sha}"
+                        )
                         file_resp = await hc.get(file_url, headers={"Authorization": f"token {token}"})
                         if file_resp.status_code == 200:
                             import base64 as _b64
                             file_data = file_resp.json()
                             content = _b64.b64decode(file_data["content"]).decode("utf-8", errors="replace")
                             source_files[fpath] = content
-                    logger.info("=== FETCHED %d SOURCE FILES === files=%s", len(source_files), list(source_files.keys()))
+                    logger.info(
+                        "=== FETCHED %d SOURCE FILES ===",
+                        len(source_files),
+                        list(source_files.keys()),
+                    )
                 else:
                     logger.warning("=== SOURCE TREE FETCH FAILED === status=%d", tree_resp.status_code)
         except Exception as e:
@@ -259,7 +426,9 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
                 "incident_title": f"CI Failed: {repo} (branch: {head_branch})",
                 "root_cause": failure_summary or "Unknown failure",
                 "resolution_steps": (
-                    f"Automated fix attempt 1/{settings.max_retry_attempts} in progress.\n"
+                    f"Automated fix attempt "
+                    f"{state.get('attempt_count', 1)}/{settings.max_retry_attempts}"
+                    " in progress.\n"
                     f"Repository: {repo}\n"
                     f"Branch: {head_branch}\n"
                     f"Commit: {head_sha}\n"
@@ -276,7 +445,6 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
     await ci_client.close()
     return {
         "failed_logs": failed_logs,
-        "attempt_count": 0,
         "ci_author": author,
         "failure_summary": failure_summary,
         "commit_sha": head_sha,
@@ -285,6 +453,69 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
         "source_files": source_files,
         "notifications_sent": [f"Initial alert sent for run {run_id}"],
     }
+
+
+def _coerce_content(content: Any) -> str:
+    """Coerce a raw LLM response ``content`` to plain text.
+
+    Different providers return different shapes: Groq/OpenAI return a ``str``,
+    while Anthropic returns a list of content blocks. Normalize to text so the
+    JSON parser always receives a string.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text") or "")
+        return "\n".join(parts)
+    return str(content)
+
+
+def _parse_repair_analysis(raw_text: str) -> RepairAnalysis:
+    """Parse a RepairAnalysis from arbitrary LLM text output.
+
+    Some providers (notably Groq via ``with_structured_output``) reject tool-call
+    arguments server-side when the model emits invalid escapes such as ``\\'``.
+    We therefore call the model in plain-text mode and parse the JSON ourselves,
+    repairing common malformations:
+      * markdown code fences / leading prose before the JSON object,
+      * invalid ``\\'`` (and similar single-character) escapes inside strings,
+      * stray trailing text after the JSON object.
+    """
+    text = raw_text.strip()
+
+    json_block = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+    if json_block:
+        text = json_block.group(1).strip()
+
+    obj_match = re.search(r"\{.*\}", text, re.DOTALL)
+    candidate = obj_match.group(0) if obj_match else text
+
+    candidate = re.sub(r"\\([^\"\\/bfnrtu])", r"\1", candidate)
+
+    data = json.loads(candidate)
+
+    explanation = data.get("explanation")
+    if explanation is None:
+        raise ValueError("LLM response missing required field: explanation")
+
+    modified_files = []
+    for entry in data.get("modified_files") or []:
+        if not isinstance(entry, dict):
+            continue
+        file_path = entry.get("file_path")
+        content = entry.get("content")
+        if isinstance(file_path, str) and file_path and isinstance(content, str):
+            modified_files.append(FileFix(file_path=file_path, content=content))
+
+    return RepairAnalysis(
+        explanation=explanation,
+        modified_files=modified_files,
+    )
 
 
 async def node_llm_fix_code(state: AgentState) -> dict[str, Any]:
@@ -296,8 +527,11 @@ async def node_llm_fix_code(state: AgentState) -> dict[str, Any]:
     for path, content in source_files.items():
         source_context += f"\n--- File: {path} ---\n{content}\n"
 
-    previous_context = ""
-    if attempt > 1:
+    # Prior attempt analysis is provided by the webhook handler (externalized
+    # retry loop) from the session row. Fall back to in-state analysis for
+    # direct CLI runs that never went through the handler.
+    previous_context = state.get("previous_context", "")
+    if not previous_context and attempt > 1:
         previous_context = (
             f"\nPrevious attempt #{attempt - 1} failed.\n"
             f"Previous analysis: {state.get('llm_analysis', 'N/A')}\n"
@@ -312,6 +546,29 @@ async def node_llm_fix_code(state: AgentState) -> dict[str, Any]:
         attempt,
     )
 
+    # Deterministic infrastructure-error gate: skip the LLM entirely when the
+    # failure is environmental (auth, clone, runner, network). Code edits cannot
+    # fix these, and sending them to the LLM risks hallucinated "fixes".
+    if isinstance(failed_logs, str) and failed_logs.startswith("Error fetching logs"):
+        infra_error = "Log fetch from CI provider failed — cannot analyze failure"
+    else:
+        infra_error = _detect_infrastructure_error(failed_logs)
+    if infra_error:
+        logger.error(
+            "=== SKIPPING LLM FIX (INFRASTRUCTURE ERROR) === detected=%r (attempt %d/%d)",
+            infra_error,
+            attempt,
+            settings.max_retry_attempts,
+        )
+        return {
+            "explanation": f"INFRASTRUCTURE_ERROR: {infra_error}",
+            "patch_applied": False,
+            "ci_status": "CANNOT_FIX",
+            "attempt_count": attempt + 1,
+            "failure_summary": f"INFRASTRUCTURE_ERROR: {infra_error}",
+            "notifications_sent": ["Infrastructure error detected — escalated to human"],
+        }
+
     system_prompt = (
         "You are an expert CI/CD fix agent. Given failing CI logs and source code, "
         "analyze the root cause and provide exact file modifications to resolve the issue.\n\n"
@@ -319,7 +576,11 @@ async def node_llm_fix_code(state: AgentState) -> dict[str, Any]:
         '- "explanation": root cause analysis of the CI failure\n'
         '- "modified_files": list of objects with "file_path" (relative path) and '
         '"content" (complete updated file content)\n\n'
-        "IMPORTANT: Return COMPLETE file contents, not diffs. Only fix the actual issue.\n\n"
+        "IMPORTANT: Return COMPLETE file contents, not diffs. Only fix the actual issue.\n"
+        "IMPORTANT: Respond with ONLY a single valid JSON object — no markdown, no code "
+        "fences, no prose before or after.\n"
+        "IMPORTANT: Inside JSON string values, escape ONLY double quotes and "
+        "backslashes. Single quotes in code must NOT be backslash-escaped.\n\n"
         "STRICT RULES:\n"
         "- NEVER modify CI configuration files (.github/workflows/*, .gitlab-ci.yml, Jenkinsfile, etc.)\n"
         "- NEVER modify Dockerfiles, docker-compose files, or container configs\n"
@@ -377,16 +638,26 @@ Analyze the failure and provide a fix as JSON."""
         }
 
     llm = _get_llm()
-    structured_llm = llm.with_structured_output(RepairAnalysis)
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
 
     try:
-        response: RepairAnalysis = await structured_llm.ainvoke(messages)
+        raw_response = await llm.ainvoke(messages)
+        response = _parse_repair_analysis(_coerce_content(raw_response.content))
         logger.info(
             "LLM response: explanation_len=%d, modified_files=%d",
             len(response.explanation or ""),
             len(response.modified_files or []),
         )
+
+        if not response.modified_files:
+            logger.info("LLM returned no modifications; skipping patch application")
+            return {
+                "explanation": response.explanation,
+                "patch_applied": False,
+                "ci_status": "PASSED",
+                "attempt_count": attempt,
+                "notifications_sent": ["No modifications suggested"],
+            }
 
         repo_info = state.get("repo_info", {})
         clone_url = repo_info.get("clone_url", "")
@@ -397,6 +668,7 @@ Analyze the failure and provide a fix as JSON."""
             return {
                 "explanation": response.explanation,
                 "patch_applied": False,
+                "ci_status": "CANNOT_FIX",
                 "attempt_count": attempt + 1,
                 "notifications_sent": ["Missing repo credentials for workspace"],
             }
@@ -453,6 +725,7 @@ Analyze the failure and provide a fix as JSON."""
             "patch_applied": success,
             "commit_sha": new_head_sha if success else repo_info.get("commit_sha", state.get("commit_sha", "")),
             "run_id": new_run_id,
+            "ci_status": "FIX_PUSHED" if success else "CANNOT_FIX",
             "patch_summary": response.explanation[:200],
             "attempt_count": attempt + 1,
             "notifications_sent": [f"Patch applied: {success}"],
@@ -468,7 +741,9 @@ Analyze the failure and provide a fix as JSON."""
             "notifications_sent": [f"Git operation failed: {e}"],
         }
     except Exception as e:
-        redacted = str(e).replace(settings.github_token or "", "[REDACTED]").replace(settings.forgejo_token or "", "[REDACTED]")
+        redacted = str(e).replace(settings.github_token or "", "[REDACTED]").replace(
+            settings.forgejo_token or "", "[REDACTED]"
+        )
         logger.error("LLM fix generation failed: %s", e)
         return {
             "explanation": f"LLM error: {redacted}",
@@ -476,43 +751,6 @@ Analyze the failure and provide a fix as JSON."""
             "attempt_count": attempt + 1,
             "notifications_sent": [f"LLM fix attempt failed: {redacted}"],
         }
-
-
-async def node_poll_ci_status(state: AgentState) -> dict[str, Any]:
-    from services.ci_waiter import wait_for_ci
-
-    repo = state.get("repository", "")
-    commit_sha = state.get("commit_sha", "")
-
-    logger.info("Waiting for CI via webhook: %s @ %s", repo, commit_sha[:12] if commit_sha else "?")
-
-    if not commit_sha:
-        logger.warning("No commit_sha in state — cannot wait for CI webhook. Escalating.")
-        return {
-            "ci_status": "CANNOT_FIX",
-            "notifications_sent": ["No commit_sha available for CI waiter — cannot poll CI status"],
-        }
-
-    result = await wait_for_ci(repo, commit_sha, timeout=600)
-    raw_status = result.get("ci_status", "TIMEOUT")
-
-    # Map webhook/terminal statuses to graph-compatible values
-    if raw_status in ("completed", "success", "PASSED"):
-        ci_status = "PASSED"
-    elif raw_status in ("failure", "cancelled", "skipped", "error", "FAILED"):
-        ci_status = "FAILED"
-    else:
-        ci_status = "FAILED"
-
-    logger.info("CI waiter resolved: %s -> %s", raw_status, ci_status)
-
-    return {
-        "ci_status": ci_status,
-        "run_id": result.get("run_id", state.get("run_id", "")),
-        "run_attempt": result.get("run_attempt", state.get("run_attempt", "1")),
-        "failure_summary": result.get("failed_logs", ""),
-        "notifications_sent": [f"CI status: {ci_status} (via webhook)"],
-    }
 
 
 async def node_notify_success(state: AgentState) -> dict[str, Any]:

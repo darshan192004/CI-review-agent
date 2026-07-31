@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     xai_model: str = "grok-2"
     xai_base_url: str = "https://api.x.ai/v1"
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "llama3.3"
+    ollama_model: str = "qwen2.5:3b-instruct-q8_0"
 
     llm_provider: str = "openai"  # openai | anthropic | bedrock | azure_openai | gemini | mistral | cohere | groq | together | deepseek | xai | ollama  # noqa: E501
 
@@ -98,6 +98,9 @@ class Settings(BaseSettings):
 
     # Bot account name (for filtering out the agent's own CI triggers)
     ci_bot_username: str = ""
+
+    # Bot account email (for filtering out the agent's own CI commits)
+    ci_bot_email: str = "ci-bot@autofix.internal"
 
     # Authentication
     secret_key: str = ""

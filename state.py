@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import operator
-from enum import Enum
+from enum import StrEnum
 from typing import Annotated, TypedDict
 
 from pydantic import BaseModel, Field
 
 
-class CIPlatform(str, Enum):
+class CIPlatform(StrEnum):
     GITHUB = "github"
     FORGEJO = "forgejo"
 
 
-class CIStatus(str, Enum):
+class CIStatus(StrEnum):
     FAILED = "FAILED"
     PASSED = "PASSED"
     RUNNING = "RUNNING"
@@ -57,6 +57,9 @@ class AgentState(TypedDict, total=False):
     failed_logs: str
     llm_analysis: str
 
+    # Prior attempt analysis persisted in the session row (externalized retry loop)
+    previous_context: str
+
     # Structured fix output
     explanation: str
     patch_applied: bool
@@ -72,5 +75,13 @@ class AgentState(TypedDict, total=False):
 
     # Internal metadata
     ci_author: str
+    commit_author: str
+    commit_author_email: str
     failure_summary: str
     patch_summary: str
+    session_id: int
+
+    # Workspace/clone state (for bot identification and infrastructure errors)
+    workspace_dir: str
+    clone_error: str
+    clone_url: str

@@ -6,6 +6,7 @@ import traceback
 
 from config import settings
 from main import run_agent
+from services.ci_client import create_ci_client
 from services.run_tracker import run_tracker
 from services.webhook_models import WebhookEvent
 from state import AgentState
@@ -21,6 +22,7 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
     repository = event.repository.full_name
     run_id = event.run_id
     run_attempt = event.run_attempt
+    event_status = event.status or "processing"
 
     logger.info(
         "=== HANDLE WEBHOOK EVENT === repo=%s run_id=%s run_attempt=%s action=%s status=%s branch=%s sha=%s author=%s",
@@ -52,25 +54,160 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
         )
         return
 
-    # Prevent infinite loop: skip events triggered by the bot itself
-    if event.author and settings.ci_bot_username and event.author == settings.ci_bot_username:
+    # Bot detection: skip events triggered by the bot itself.
+    # The commit author (name/email) is the reliable discriminator — event.author
+    # is the *pusher* account, which is identical for human and bot commits.
+    commit_author = event.commit_author
+    commit_author_email = event.commit_author_email
+    has_configured_token = (
+        isinstance(getattr(settings, "forgejo_token", None), str)
+        and isinstance(getattr(settings, "forgejo_base_url", None), str)
+    ) or isinstance(getattr(settings, "github_token", None), str)
+    if not commit_author and not commit_author_email and event.commit_sha and has_configured_token:
+        ci_client = None
+        try:
+            if event.platform.value == "forgejo":
+                ci_client = create_ci_client(
+                    "forgejo", settings.forgejo_token, settings.forgejo_base_url
+                )
+            else:
+                ci_client = create_ci_client("github", settings.github_token, "")
+            parts = repository.split("/")
+            if len(parts) == 2:
+                commit_author, commit_author_email = await ci_client.get_commit_author(
+                    parts[0], parts[1], event.commit_sha
+                )
+                logger.info(
+                    "Resolved commit author via API for %s: author=%s email=%s",
+                    event.commit_sha,
+                    commit_author,
+                    commit_author_email,
+                )
+        except Exception as e:
+            logger.warning(
+                "Failed to resolve commit author via API for %s: %s",
+                event.commit_sha,
+                e,
+            )
+        finally:
+            if ci_client is not None:
+                await ci_client.close()
+
+    is_bot_sender = bool(
+        settings.ci_bot_username
+        and event.author
+        and event.author == settings.ci_bot_username
+    )
+    is_bot_commit = bool(
+        (
+            settings.ci_bot_username
+            and commit_author
+            and commit_author == settings.ci_bot_username
+        )
+        or (
+            settings.ci_bot_email
+            and commit_author_email
+            and commit_author_email == settings.ci_bot_email
+        )
+    )
+    if is_bot_sender or is_bot_commit:
         logger.info(
-            "Event from bot user '%s' for %s run %s, skipping to prevent infinite loop",
+            "Event from bot — sender='%s' commit_author='%s' "
+            "commit_author_email='%s' for %s run %s",
             event.author,
+            event.commit_author,
+            event.commit_author_email,
             repository,
             run_id,
         )
-        await run_tracker.record(
-            repository,
-            run_id,
-            run_attempt=run_attempt,
-            status="skipped_bot",
-            platform=event.platform.value,
-            branch=event.branch or event.repository.default_branch,
-            commit_sha=event.commit_sha,
-            author=event.author,
-        )
-        return
+        # Match bot commit to the active session that pushed it
+        session = await run_tracker.get_session_by_fix_sha(repository, event.commit_sha)
+        if session:
+            if event_status in ("success", "PASSED"):
+                logger.info(
+                    "Bot success for %s — completing session %d",
+                    repository,
+                    session["id"],
+                )
+                await run_tracker.update_session(
+                    session["id"], status="PASSED",
+                )
+                await run_tracker.record(
+                    repository, run_id, status="PASSED",
+                    platform=event.platform.value,
+                    branch=event.branch or event.repository.default_branch,
+                    commit_sha=event.commit_sha,
+                    author=event.author,
+                )
+                return
+            elif event_status in ("failure", "FAILED", "error"):
+                # Retry: match found, re-invoke agent with previous context
+                if session["attempt_count"] >= session["max_attempts"]:
+                    logger.info(
+                        "Bot failure for %s — session %d exhausted "
+                        "(attempt %d/%d)",
+                        repository,
+                        session["id"],
+                        session["attempt_count"],
+                        session["max_attempts"],
+                    )
+                    await run_tracker.update_session(
+                        session["id"], status="EXHAUSTED",
+                    )
+                    await run_tracker.record(
+                        repository, run_id, status="EXHAUSTED",
+                        platform=event.platform.value,
+                        branch=event.branch or event.repository.default_branch,
+                        commit_sha=event.commit_sha,
+                        author=event.author,
+                    )
+                    broadcast_event(
+                        task_key=f"{repository}:{session['trigger_run_id']}:{run_attempt}",
+                        status="EXHAUSTED",
+                        meta={
+                            "repository": repository,
+                            "run_id": session["trigger_run_id"],
+                            "exhausted_at": session["attempt_count"],
+                        },
+                    )
+                    return
+                # Continue to agent invocation below with session context
+                logger.info(
+                    "Bot failure for %s — retrying via session %d "
+                    "(attempt %d/%d)",
+                    repository,
+                    session["id"],
+                    session["attempt_count"],
+                    session["max_attempts"],
+                )
+            else:
+                # Bot RUNNING/PENDING/QUEUED — just record and wait
+                await run_tracker.record(
+                    repository, run_id, status=event_status,
+                    platform=event.platform.value,
+                    branch=event.branch or event.repository.default_branch,
+                    commit_sha=event.commit_sha,
+                    author=event.author,
+                )
+                return
+        else:
+            logger.info(
+                "Bot commit with no matching session for %s run %s — "
+                "skipping to prevent infinite loop",
+                repository,
+                run_id,
+            )
+            await run_tracker.record(
+                repository,
+                run_id,
+                run_attempt=run_attempt,
+                status="skipped_bot",
+                platform=event.platform.value,
+                branch=event.branch or event.repository.default_branch,
+                commit_sha=event.commit_sha,
+                author=event.author,
+            )
+            return
 
     # Detect rerun: run already completed, webhook is for a new attempt
     is_rerun = await run_tracker.is_completed(repository, run_id, run_attempt)
@@ -114,7 +251,6 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
             )
             return
 
-    event_status = event.status or "processing"
     await run_tracker.record(
         repository,
         run_id,
@@ -160,7 +296,19 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
         )
         return
 
-    source_files: dict[str, str] = {}
+    # Session management: create new session for human failures,
+    # or reuse existing session for bot-retried failures.
+    existing_session = await run_tracker.get_session_by_head_sha(repository, event.commit_sha)
+    session = existing_session or await run_tracker.create_session(
+        repository,
+        event.commit_sha,
+        branch=event.branch or event.repository.default_branch,
+        trigger_run_id=run_id,
+        max_attempts=settings.max_retry_attempts,
+    )
+
+    attempt_count = (session["attempt_count"] if session else 1)
+    previous_context = session.get("previous_analysis", "") if session else ""
 
     initial_state: AgentState = {
         "repository": repository,
@@ -169,7 +317,7 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
         "ci_platform": event.platform.value,
         "run_id": run_id,
         "run_attempt": run_attempt,
-        "attempt_count": 0,
+        "attempt_count": attempt_count,
         "ci_status": "RUNNING",
         "failed_logs": "",
         "llm_analysis": "",
@@ -177,10 +325,14 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
         "patch_applied": False,
         "repo_info": {},
         "notifications_sent": [],
-        "source_files": source_files,
+        "source_files": {},
         "ci_author": event.author,
+        "commit_author": commit_author,
+        "commit_author_email": commit_author_email,
         "failure_summary": "",
         "patch_summary": "",
+        "previous_context": previous_context,
+        "session_id": session["id"] if session else None,
     }
 
     await run_tracker.update_status(
@@ -238,6 +390,20 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
             patch_summary=result.get("patch_summary", ""),
             attempt_count=result.get("attempt_count", 0),
         )
+        # Update the retry session: record the fix SHA and analysis
+        # for the next bot-triggered retry webhook.
+        session_id = initial_state.get("session_id")
+        if session_id and final_status == "FIX_PUSHED":
+            await run_tracker.update_session(
+                session_id,
+                last_fix_sha=result.get("commit_sha", ""),
+                previous_analysis=result.get("explanation", ""),
+                attempt_count=result.get("attempt_count", attempt_count),
+            )
+        elif session_id and final_status in ("PASSED", "EXHAUSTED", "CANNOT_FIX"):
+            await run_tracker.update_session(
+                session_id, status=final_status,
+            )
         broadcast_event(
             task_key=task_key,
             status=final_status,
@@ -298,3 +464,4 @@ def dispatch_webhook_event(event: WebhookEvent) -> None:
 
 def get_active_task_count() -> int:
     return sum(1 for t in _active_tasks.values() if not t.done())
+

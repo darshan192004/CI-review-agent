@@ -11,6 +11,7 @@ class TestRunTracker:
     @pytest.fixture(autouse=True)
     def _isolated_db(self, tmp_path):
         import services.run_tracker as rt
+
         self._original_db = rt._DB_PATH
         rt._DB_PATH = tmp_path / "ci_runs.db"
         self.tracker = RunTracker(ttl_seconds=60)
@@ -92,6 +93,69 @@ class TestRunTracker:
         await self.tracker.record("owner/repo", "1")
         await self.tracker.record("owner/repo", "2")
         assert len(await self.tracker.get_all_runs()) == 2
+
+    @pytest.mark.asyncio
+    async def test_create_session_returns_active_session(self) -> None:
+        """create_session must return the created session (was returning None
+        because _session_row_to_dict mis-mapped max_attempts/status columns)."""
+        session = await self.tracker.create_session("owner/repo", "sha123", branch="main", trigger_run_id="42")
+        assert session is not None
+        assert session["id"] is not None
+        assert session["head_sha"] == "sha123"
+        assert session["trigger_run_id"] == "42"
+        assert session["status"] == "active"
+        assert session["attempt_count"] == 1
+        assert session["max_attempts"] == 3
+        assert session["last_fix_sha"] == ""
+
+    @pytest.mark.asyncio
+    async def test_session_fix_sha_lineage_roundtrip(self) -> None:
+        """The fix-sha lineage link: record last_fix_sha on the active session,
+        then resolve it via get_session_by_fix_sha (used by bot webhooks)."""
+        session = await self.tracker.create_session("owner/repo", "sha123", branch="main", trigger_run_id="42")
+        assert session is not None
+        await self.tracker.update_session(
+            session["id"],
+            last_fix_sha="fixsha999",
+            previous_analysis="the fix explanation",
+            attempt_count=2,
+        )
+        resolved = await self.tracker.get_session_by_fix_sha("owner/repo", "fixsha999")
+        assert resolved is not None
+        assert resolved["id"] == session["id"]
+        assert resolved["last_fix_sha"] == "fixsha999"
+        assert resolved["previous_analysis"] == "the fix explanation"
+        assert resolved["attempt_count"] == 2
+        assert resolved["status"] == "active"
+
+    @pytest.mark.asyncio
+    async def test_session_fix_sha_requires_active(self) -> None:
+        """Terminal sessions must not match fix-sha lineage queries."""
+        session = await self.tracker.create_session("owner/repo", "sha123", branch="main", trigger_run_id="42")
+        assert session is not None
+        await self.tracker.update_session(session["id"], last_fix_sha="fixsha999")
+        await self.tracker.update_session(session["id"], status="PASSED")
+        assert await self.tracker.get_session_by_fix_sha("owner/repo", "fixsha999") is None
+
+    @pytest.mark.asyncio
+    async def test_session_update_persists_all_fields(self) -> None:
+        """update_session must persist every column it writes (columns were
+        silently mis-mapped, so last_fix_sha/status never took effect)."""
+        session = await self.tracker.create_session("owner/repo", "sha123", branch="main", trigger_run_id="42")
+        assert session is not None
+        await self.tracker.update_session(
+            session["id"],
+            status="EXHAUSTED",
+            last_fix_sha="fixsha999",
+            previous_analysis="analysis",
+            attempt_count=3,
+        )
+        fresh = await self.tracker.get_session(session["id"])
+        assert fresh is not None
+        assert fresh["status"] == "EXHAUSTED"
+        assert fresh["last_fix_sha"] == "fixsha999"
+        assert fresh["previous_analysis"] == "analysis"
+        assert fresh["attempt_count"] == 3
 
     @pytest.mark.asyncio
     async def test_record_with_extra_fields(self) -> None:

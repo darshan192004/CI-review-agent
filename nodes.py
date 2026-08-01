@@ -12,6 +12,7 @@ from config import settings
 from services.ci_client import CIClient, create_ci_client
 from services.git_manager import GitError, WorkspaceGitManager
 from services.mcp_client import MCPClient
+from services.rate_limiter import invoke_with_llm_rate_limit
 from state import AgentState, FileFix, RepairAnalysis
 
 logger = logging.getLogger(__name__)
@@ -127,9 +128,7 @@ def _build_ci_client(state: AgentState) -> CIClient:
     platform = state.get("ci_platform", "github")
     if platform == "github":
         return create_ci_client("github", settings.github_token, "")
-    return create_ci_client(
-        "forgejo", settings.forgejo_token, settings.forgejo_base_url
-    )
+    return create_ci_client("forgejo", settings.forgejo_token, settings.forgejo_base_url)
 
 
 def _build_mcp_client() -> MCPClient | None:
@@ -145,14 +144,22 @@ def _build_mcp_client() -> MCPClient | None:
 
 def _extract_failure_summary(logs: str) -> str:
     lines = logs.splitlines()
-    error_lines = [
-        line
-        for line in lines
-        if re.search(r"(ERROR|FAIL|Exception|panic|FATAL)", line, re.IGNORECASE)
-    ]
+    error_lines = [line for line in lines if re.search(r"(ERROR|FAIL|Exception|panic|FATAL)", line, re.IGNORECASE)]
     if error_lines:
         return error_lines[0][:200]
     return logs[:200] if logs else "Unknown failure"
+
+
+def _redact(text: str) -> str:
+    """Redact configured tokens from error text without corrupting it.
+
+    ``str.replace("", ...)`` would insert the replacement between every
+    character, so unset (empty) tokens must be skipped.
+    """
+    for secret in (settings.github_token, settings.forgejo_token):
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+    return text
 
 
 _INFRASTRUCTURE_ERROR_PATTERNS = [
@@ -181,6 +188,14 @@ _INFRASTRUCTURE_ERROR_PATTERNS = [
     r"no\s+runner.*online",
     r"unable to access.*clone",
     r"fatal: could not read from remote",
+    # Runner / container runtime failures — cannot be fixed with code edits.
+    r"path\s+escapes\s+from\s+parent",  # forgejo-runner docker cp action copy bug
+    r"copyDir:\s+failed\s+to\s+copy",
+    r"executable\s+file\s+not\s+found\s+in",
+    r"runtime\s+exec\s+failed",
+    r"exitcode\s+'?127'?",  # 127 = command/executable not found (not test failures)
+    r"command\s+not\s+found",
+    r"error\s+response\s+from\s+daemon",
 ]
 
 
@@ -207,6 +222,7 @@ async def node_clone_repository(state: AgentState) -> dict[str, Any]:
     Exit early if clone fails to prevent hallucination on empty workspace.
     """
     from services.git_manager import GitError, WorkspaceGitManager
+
     logger.info("Cloning repository for %s run %s", state.get("repository", ""), state.get("run_id"))
 
     repo = state.get("repository", "")
@@ -275,9 +291,7 @@ async def node_clone_repository(state: AgentState) -> dict[str, Any]:
             "notifications_sent": ["Repository clone failed"],
         }
     except Exception as e:
-        redacted = str(e).replace(settings.github_token or "", "[REDACTED]").replace(
-            settings.forgejo_token or "", "[REDACTED]"
-        )
+        redacted = _redact(str(e))
         logger.error("=== CLONE ERROR (unexpected): %s ===", e)
         return {
             "ci_status": "CANNOT_FIX",
@@ -285,8 +299,6 @@ async def node_clone_repository(state: AgentState) -> dict[str, Any]:
             "failure_summary": f"INFRASTRUCTURE_ERROR: Clone error — {redacted}",
             "notifications_sent": ["Repository clone error"],
         }
-
-
 
 
 async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
@@ -316,7 +328,10 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
     try:
         logger.info(
             "=== FETCHING LOGS === owner=%s repo=%s run_id=%s platform=%s token_present=%s forgejo_base=%s",
-            owner, repo_name, run_id, state.get("ci_platform"),
+            owner,
+            repo_name,
+            run_id,
+            state.get("ci_platform"),
             bool(token),
             settings.forgejo_base_url if state.get("ci_platform") == "forgejo" else "N/A",
         )
@@ -324,13 +339,12 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
         failed_logs = await ci_client.fetch_logs(owner, repo_name, run_id)
         logger.info(
             "=== LOGS FETCHED === run=%s len=%d starts_with=%s",
-            run_id, len(failed_logs) if isinstance(failed_logs, str) else -1,
+            run_id,
+            len(failed_logs) if isinstance(failed_logs, str) else -1,
             (failed_logs[:80] + "...") if isinstance(failed_logs, str) and len(failed_logs) > 80 else failed_logs,
         )
     except Exception as e:
-        redacted = str(e).replace(settings.github_token or "", "[REDACTED]").replace(
-            settings.forgejo_token or "", "[REDACTED]"
-        )
+        redacted = _redact(str(e))
         logger.error("Failed to fetch logs (continuing with state defaults): %s", e)
         failed_logs = f"Error fetching logs: {redacted}"
         failure_summary = f"Log fetch error: {redacted}"
@@ -376,10 +390,7 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
             import httpx as _httpx
 
             base = settings.forgejo_base_url.rstrip("/")
-            tree_url = (
-                f"{base}/api/v1/repos/{owner}/{repo_name}"
-                f"/git/trees/{head_sha}?recursive=1"
-            )
+            tree_url = f"{base}/api/v1/repos/{owner}/{repo_name}/git/trees/{head_sha}?recursive=1"
             logger.info("=== FETCHING SOURCE TREE === url=%s", tree_url)
             async with _httpx.AsyncClient(timeout=30.0) as hc:
                 tree_resp = await hc.get(tree_url, headers={"Authorization": f"token {token}"})
@@ -391,13 +402,11 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
                         if e["type"] == "blob" and e["path"].endswith(".py")
                     ]
                     for fpath in py_files[:15]:
-                        file_url = (
-                            f"{base}/api/v1/repos/{owner}/{repo_name}/contents/{fpath}"
-                            f"?ref={head_sha}"
-                        )
+                        file_url = f"{base}/api/v1/repos/{owner}/{repo_name}/contents/{fpath}?ref={head_sha}"
                         file_resp = await hc.get(file_url, headers={"Authorization": f"token {token}"})
                         if file_resp.status_code == 200:
                             import base64 as _b64
+
                             file_data = file_resp.json()
                             content = _b64.b64decode(file_data["content"]).decode("utf-8", errors="replace")
                             source_files[fpath] = content
@@ -415,7 +424,9 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
         logger.warning(
             "=== NO SOURCE FILES FETCHED === LLM will have zero code context. "
             "Check token permissions, SHA validity, or API connectivity for %s/%s @ %s",
-            owner, repo_name, head_sha,
+            owner,
+            repo_name,
+            head_sha,
         )
 
     if mcp_client:
@@ -641,7 +652,12 @@ Analyze the failure and provide a fix as JSON."""
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
 
     try:
-        raw_response = await llm.ainvoke(messages)
+        raw_response = await invoke_with_llm_rate_limit(
+            llm,
+            messages,
+            max_retries=settings.llm_max_retries,
+            base_backoff_seconds=settings.llm_retry_backoff_seconds,
+        )
         response = _parse_repair_analysis(_coerce_content(raw_response.content))
         logger.info(
             "LLM response: explanation_len=%d, modified_files=%d",
@@ -650,13 +666,18 @@ Analyze the failure and provide a fix as JSON."""
         )
 
         if not response.modified_files:
-            logger.info("LLM returned no modifications; skipping patch application")
+            # The agent only runs on CI failures. An LLM that proposes no code
+            # changes while the run is still failing must NOT be reported as
+            # PASSED — that would claim a green build that never happened.
+            # Treat it as an unresolved failure and escalate to a human.
+            logger.info("LLM returned no modifications; escalating (CI still failing)")
             return {
                 "explanation": response.explanation,
                 "patch_applied": False,
-                "ci_status": "PASSED",
-                "attempt_count": attempt,
-                "notifications_sent": ["No modifications suggested"],
+                "ci_status": "CANNOT_FIX",
+                "attempt_count": attempt + 1,
+                "failure_summary": ("LLM suggested no code changes while CI is failing — escalated to human"),
+                "notifications_sent": ["LLM suggested no code changes — escalated to human"],
             }
 
         repo_info = state.get("repo_info", {})
@@ -691,9 +712,7 @@ Analyze the failure and provide a fix as JSON."""
                 "yes" if clone_url else "no",
             )
             if file_changes and git_ws.apply_file_changes(file_changes):
-                commit_msg = (
-                    f"fix(ci): auto-repair attempt {attempt}\n\n{response.explanation}"
-                )
+                commit_msg = f"fix(ci): auto-repair attempt {attempt}\n\n{response.explanation}"
                 success = git_ws.commit_and_push(commit_msg)
                 logger.info("Push result: success=%s, new_run_id=%s", success, new_run_id)
 
@@ -741,14 +760,14 @@ Analyze the failure and provide a fix as JSON."""
             "notifications_sent": [f"Git operation failed: {e}"],
         }
     except Exception as e:
-        redacted = str(e).replace(settings.github_token or "", "[REDACTED]").replace(
-            settings.forgejo_token or "", "[REDACTED]"
-        )
+        redacted = _redact(str(e))
         logger.error("LLM fix generation failed: %s", e)
         return {
             "explanation": f"LLM error: {redacted}",
             "patch_applied": False,
+            "ci_status": "CANNOT_FIX",
             "attempt_count": attempt + 1,
+            "failure_summary": f"LLM fix generation failed — escalated to human: {redacted}",
             "notifications_sent": [f"LLM fix attempt failed: {redacted}"],
         }
 
@@ -778,11 +797,7 @@ async def node_notify_success(state: AgentState) -> dict[str, Any]:
         if mcp_client:
             await mcp_client.disconnect()
 
-    return {
-        "notifications_sent": [
-            f"Success notification sent. CI passed after {attempt} attempt(s)"
-        ]
-    }
+    return {"notifications_sent": [f"Success notification sent. CI passed after {attempt} attempt(s)"]}
 
 
 async def node_notify_human_escalation(state: AgentState) -> dict[str, Any]:
@@ -795,14 +810,8 @@ async def node_notify_human_escalation(state: AgentState) -> dict[str, Any]:
             await mcp_client.connect()
             alert_payload = {
                 "platform": settings.messaging_platform,
-                "incident_title": (
-                    f"ESCALATION: CI Fix Failed ({state.get('repository', 'unknown')})"
-                ),
-                "root_cause": (
-                    state.get(
-                        "llm_analysis", "Automated analysis could not resolve the issue"
-                    )
-                ),
+                "incident_title": (f"ESCALATION: CI Fix Failed ({state.get('repository', 'unknown')})"),
+                "root_cause": (state.get("llm_analysis", "Automated analysis could not resolve the issue")),
                 "resolution_steps": (
                     f"Automated fix failed after {attempt} attempts. Human intervention required.\n"
                     f"Repository: {state.get('repository', 'N/A')}\n"
@@ -819,6 +828,4 @@ async def node_notify_human_escalation(state: AgentState) -> dict[str, Any]:
         if mcp_client:
             await mcp_client.disconnect()
 
-    return {
-        "notifications_sent": [f"Escalation alert sent after {attempt} failed attempts"]
-    }
+    return {"notifications_sent": [f"Escalation alert sent after {attempt} failed attempts"]}

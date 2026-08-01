@@ -79,7 +79,7 @@ class AgentState(TypedDict, total=False):
     commit_author_email: str
     failure_summary: str
     patch_summary: str
-    session_id: int
+    session_id: int | None
 
     # Workspace/clone state (for bot identification and infrastructure errors)
     workspace_dir: str

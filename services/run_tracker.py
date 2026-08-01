@@ -53,13 +53,9 @@ async def _init_db(db_path: Path) -> None:
         async with db.execute("PRAGMA table_info(ci_runs)") as cursor:
             columns = [row[1] async for row in cursor]
             if "last_webhook_at" not in columns:
-                await db.execute(
-                    "ALTER TABLE ci_runs ADD COLUMN last_webhook_at REAL DEFAULT 0"
-                )
+                await db.execute("ALTER TABLE ci_runs ADD COLUMN last_webhook_at REAL DEFAULT 0")
             if "attempt_count" not in columns:
-                await db.execute(
-                    "ALTER TABLE ci_runs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0"
-                )
+                await db.execute("ALTER TABLE ci_runs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0")
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS ci_sessions (
@@ -111,19 +107,21 @@ class RunTracker:
         )
         await db.commit()
 
-    async def is_duplicate(
-        self, repository: str, run_id: str, run_attempt: str = "1"
-    ) -> bool:
+    async def is_duplicate(self, repository: str, run_id: str, run_attempt: str = "1") -> bool:
         status = await self.get_run_status(repository, run_id, run_attempt)
         if status is None:
             return False
         return status in (
-            "PASSED", "EXHAUSTED", "AGENT_WORKING", "error", "success",
+            "PASSED",
+            "EXHAUSTED",
+            "CANNOT_FIX",
+            "FIX_PUSHED",
+            "AGENT_WORKING",
+            "error",
+            "success",
         )
 
-    async def get_run_status(
-        self, repository: str, run_id: str, run_attempt: str = "1"
-    ) -> str | None:
+    async def get_run_status(self, repository: str, run_id: str, run_attempt: str = "1") -> str | None:
         """Get the current status of a run, or None if not tracked."""
         async with aiosqlite.connect(_DB_PATH) as db:
             await _init_db(_DB_PATH)
@@ -135,9 +133,7 @@ class RunTracker:
                 row = await cursor.fetchone()
                 return row[0] if row else None
 
-    async def is_completed(
-        self, repository: str, run_id: str, run_attempt: str = "1"
-    ) -> bool:
+    async def is_completed(self, repository: str, run_id: str, run_attempt: str = "1") -> bool:
         """Check if a run has already completed (used to detect reruns)."""
         status = await self.get_run_status(repository, run_id, run_attempt)
         return status in ("PASSED", "FAILED", "EXHAUSTED", "error", "success", "failed")
@@ -280,9 +276,7 @@ class RunTracker:
                     async for row in cursor:
                         counts[row[0]] = row[1]
             else:
-                async with db.execute(
-                    "SELECT status, COUNT(*) FROM ci_runs GROUP BY status"
-                ) as cursor:
+                async with db.execute("SELECT status, COUNT(*) FROM ci_runs GROUP BY status") as cursor:
                     async for row in cursor:
                         counts[row[0]] = row[1]
             return counts
@@ -353,15 +347,11 @@ class RunTracker:
     async def get_session(self, session_id: int) -> dict[str, Any] | None:
         async with aiosqlite.connect(_DB_PATH) as db:
             await _init_db(_DB_PATH)
-            async with db.execute(
-                "SELECT * FROM ci_sessions WHERE id = ?", (session_id,)
-            ) as cursor:
+            async with db.execute("SELECT * FROM ci_sessions WHERE id = ?", (session_id,)) as cursor:
                 row = await cursor.fetchone()
         return self._session_row_to_dict(row) if row else None
 
-    async def get_session_by_head_sha(
-        self, repository: str, head_sha: str
-    ) -> dict[str, Any] | None:
+    async def get_session_by_head_sha(self, repository: str, head_sha: str) -> dict[str, Any] | None:
         async with aiosqlite.connect(_DB_PATH) as db:
             await _init_db(_DB_PATH)
             async with db.execute(
@@ -371,9 +361,7 @@ class RunTracker:
                 row = await cursor.fetchone()
         return self._session_row_to_dict(row) if row else None
 
-    async def get_session_by_fix_sha(
-        self, repository: str, fix_sha: str
-    ) -> dict[str, Any] | None:
+    async def get_session_by_fix_sha(self, repository: str, fix_sha: str) -> dict[str, Any] | None:
         """Find the active session whose bot-pushed head_sha matches a webhook.
 
         This is the lineage link that lets a bot-authored terminal webhook be
@@ -439,13 +427,11 @@ class RunTracker:
     async def get_all_sessions(self) -> list[dict[str, Any]]:
         async with aiosqlite.connect(_DB_PATH) as db:
             await _init_db(_DB_PATH)
-            async with db.execute(
-                "SELECT * FROM ci_sessions ORDER BY created_at ASC"
-            ) as cursor:
+            async with db.execute("SELECT * FROM ci_sessions ORDER BY created_at ASC") as cursor:
                 rows = await cursor.fetchall()
         return [self._session_row_to_dict(row) for row in rows]
 
-    def _session_row_to_dict(self, row: tuple[Any, ...]) -> dict[str, Any]:
+    def _session_row_to_dict(self, row: Any) -> dict[str, Any]:
         return {
             "id": row[0],
             "repository": row[1],
@@ -453,15 +439,15 @@ class RunTracker:
             "head_sha": row[3],
             "trigger_run_id": row[4],
             "attempt_count": row[5],
-            "status": row[6],
-            "previous_analysis": row[7],
-            "last_fix_sha": row[8],
-            "max_attempts": row[9],
+            "max_attempts": row[6],
+            "status": row[7],
+            "previous_analysis": row[8],
+            "last_fix_sha": row[9],
             "created_at": row[10],
             "updated_at": row[11],
         }
 
-    def _row_to_dict(self, row: tuple[Any, ...]) -> dict[str, Any]:
+    def _row_to_dict(self, row: Any) -> dict[str, Any]:
         return {
             "repository": row[0],
             "run_id": row[1],

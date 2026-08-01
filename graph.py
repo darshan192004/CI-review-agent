@@ -25,13 +25,16 @@ def route_clone_outcome(
 
 def route_fix_outcome(
     state: AgentState,
-) -> Literal["notify_human_escalation", "fix_code"]:
+) -> Literal["notify_human_escalation", "fix_code", "end"]:
     # In the single-pass graph, the externalized loop owns retry decisions.
-    # Within one graph run, only CANNOT_FIX / EXHAUSTED end the attempt here;
-    # any in-graph retry must be limited by the configured max attempts so a
-    # directly-invoked graph (e.g. `ci-agent run`) can still loop safely.
+    # A successful push (FIX_PUSHED) terminates the graph run so the webhook
+    # handler can record last_fix_sha on the still-active session; re-running
+    # llm_fix_code would re-clone, re-push (non-fast-forward), and destroy the
+    # session lineage. PASSED (LLM found nothing to change) also terminates.
     if state.get("ci_status") in ("CANNOT_FIX", "EXHAUSTED", "TIMEOUT", "CANCELLED"):
         return "notify_human_escalation"
+    if state.get("ci_status") in ("FIX_PUSHED", "PASSED"):
+        return "end"
     attempt = state.get("attempt_count", 1)
     if attempt >= settings.max_retry_attempts:
         state["ci_status"] = "EXHAUSTED"
@@ -66,6 +69,7 @@ def build_graph(checkpointer: Any = None) -> Any:
         {
             "notify_human_escalation": "notify_human_escalation",
             "fix_code": "llm_fix_code",
+            "end": END,
         },
     )
 

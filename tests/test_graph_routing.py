@@ -14,10 +14,7 @@ class TestRouteCloneOutcome:
 
 class TestDetectInfrastructureError:
     def test_detects_git_auth_failure(self):
-        logs = (
-            "fatal: could not read Username for 'http://localhost:3000': "
-            "terminal prompts disabled"
-        )
+        logs = "fatal: could not read Username for 'http://localhost:3000': terminal prompts disabled"
         assert _detect_infrastructure_error(logs)
 
     def test_detects_access_denied(self):
@@ -51,6 +48,32 @@ class TestDetectInfrastructureError:
         )
         assert _detect_infrastructure_error(logs)
 
+    def test_detects_runner_path_escapes(self):
+        logs = (
+            "❌  Failure - Main actions/checkout@v4\n"
+            "⚙️ [runner]: copyDir: failed to copy content to container: "
+            "Error response from daemon: statat var/run/act/actions/x: "
+            "path escapes from parent"
+        )
+        assert _detect_infrastructure_error(logs)
+
+    def test_detects_runner_exec_failure(self):
+        logs = (
+            "OCI runtime exec failed: exec failed: unable to start container process: "
+            'exec: "node": executable file not found in $PATH'
+        )
+        assert _detect_infrastructure_error(logs)
+
+    def test_detects_exitcode_127(self):
+        logs = "Error occurred running finally: exitcode '127': command not found"
+        assert _detect_infrastructure_error(logs)
+
+    def test_exitcode_1_is_not_infrastructure(self):
+        """A normal test failure exits with code 1 — must NOT be misclassified
+        as an infrastructure error (regression: exitcode '1' skipped LLM fix)."""
+        logs = "=================== FAILURES ===================\ntest_calc.py::test_subtract FAILED\nexitcode '1'"
+        assert _detect_infrastructure_error(logs) == ""
+
 
 class TestParseRepairAnalysis:
     def test_parses_plain_json(self):
@@ -71,20 +94,16 @@ class TestParseRepairAnalysis:
 
     def test_repairs_invalid_single_quote_escapes(self):
         raw = (
-            "{\"explanation\": \"raise AssertionError(\\'failed\\')\", "
-            "\"modified_files\": [{\"file_path\": \"calculator.py\", "
-            "\"content\": \"raise ValueError(\\'Division by zero\\')\"}]} "
+            '{"explanation": "raise AssertionError(\\\'failed\\\')", '
+            '"modified_files": [{"file_path": "calculator.py", '
+            '"content": "raise ValueError(\\\'Division by zero\\\')"}]} '
         )
         result = _parse_repair_analysis(raw)
         assert result.explanation == "raise AssertionError('failed')"
         assert result.modified_files[0].content == "raise ValueError('Division by zero')"
 
     def test_parses_json_embedded_in_prose(self):
-        raw = (
-            "Here is my analysis:\n"
-            '{"explanation": "root cause", "modified_files": []}\n'
-            "Hope that helps!"
-        )
+        raw = 'Here is my analysis:\n{"explanation": "root cause", "modified_files": []}\nHope that helps!'
         result = _parse_repair_analysis(raw)
         assert result.explanation == "root cause"
 
@@ -113,10 +132,18 @@ class TestParseRepairAnalysis:
 
 class TestRouteFixOutcome:
     def test_fix_outcome_for_passed(self):
-        # PASSED in graph => single-pass. External loop handles via success webhook.
-        # In-graph: route back to fix_code (loop limited by max_retry_attempts).
+        # PASSED (LLM found nothing to change) terminates the single-pass
+        # graph; the external webhook loop owns any follow-up.
         state = {"ci_status": "PASSED", "attempt_count": 1}
-        assert route_fix_outcome(state) == "fix_code"
+        assert route_fix_outcome(state) == "end"
+
+    def test_fix_pushed_terminates_graph(self):
+        # A successful push must terminate the graph run so the webhook handler
+        # can record last_fix_sha on the still-active session (bug 1). Re-running
+        # llm_fix_code would re-clone, re-push (non-fast-forward) and destroy the
+        # session lineage.
+        state = {"ci_status": "FIX_PUSHED", "attempt_count": 1}
+        assert route_fix_outcome(state) == "end"
 
     def test_failed_under_max_routes_to_fix(self):
         state = {"ci_status": "FAILED", "attempt_count": 1}
@@ -169,4 +196,5 @@ class TestBuildGraph:
         assert ("fetch_logs_and_alert", "llm_fix_code") in edges
         assert ("llm_fix_code", "llm_fix_code") in edges
         assert ("llm_fix_code", "notify_human_escalation") in edges
+        assert ("llm_fix_code", "__end__") in edges
         assert ("notify_human_escalation", "__end__") in edges

@@ -69,6 +69,14 @@ class Settings(BaseSettings):
 
     llm_provider: str = "openai"  # openai | anthropic | bedrock | azure_openai | gemini | mistral | cohere | groq | together | deepseek | xai | ollama  # noqa: E501
 
+    # LLM rate limiting — applies to every provider so the agent never trips an
+    # upstream requests-per-minute limit. 0 disables the limiter.
+    llm_rate_limit_per_minute: int = 0
+    llm_rate_limit_burst: int = 0  # 0 = defaults to rate_per_minute
+    llm_rate_limit_max_wait_seconds: float = 600.0
+    llm_max_retries: int = 3  # retries on 429 / transient 5xx / network errors
+    llm_retry_backoff_seconds: float = 2.0
+
     # Agent Engine Options
     max_retry_attempts: int = 3
     log_max_tokens: int = 4000

@@ -50,6 +50,7 @@ def _redact_error(msg: str) -> str:
     msg = re.sub(r"(/[A-Za-z0-9_]+@github\.com)", r"/[REDACTED]@github.com", msg)
     return msg
 
+
 # SSE event bus — broadcasts state changes to connected dashboard clients
 sse_event_bus: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
@@ -57,11 +58,13 @@ sse_event_bus: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 def broadcast_event(task_key: str, status: str, meta: dict[str, Any]) -> None:
     """Non-blocking put to the SSE event queue."""
     try:
-        sse_event_bus.put_nowait({
-            "task_key": task_key,
-            "status": status,
-            "meta": meta,
-        })
+        sse_event_bus.put_nowait(
+            {
+                "task_key": task_key,
+                "status": status,
+                "meta": meta,
+            }
+        )
     except asyncio.QueueFull:
         logger.warning("SSE event queue full, dropping event for %s", task_key)
 
@@ -75,18 +78,15 @@ def _check_config_warnings() -> None:
         )
     if settings.forgejo_org and not settings.forgejo_token:
         logger.warning(
-            "FORGEJO_ORG is set (%s) but FORGEJO_TOKEN is empty. "
-            "Repo discovery will fail.", settings.forgejo_org
+            "FORGEJO_ORG is set (%s) but FORGEJO_TOKEN is empty. Repo discovery will fail.", settings.forgejo_org
         )
     if settings.forgejo_base_url == _DEFAULT_FORGEJO_URL:
         logger.warning(
-            "FORGEJO_BASE_URL is still the default (%s). "
-            "Update it to your Forgejo instance URL.", _DEFAULT_FORGEJO_URL
+            "FORGEJO_BASE_URL is still the default (%s). Update it to your Forgejo instance URL.", _DEFAULT_FORGEJO_URL
         )
     if settings.github_org and not settings.github_token:
         logger.warning(
-            "GITHUB_ORG is set (%s) but GITHUB_TOKEN is empty. "
-            "Repo discovery will fail.", settings.github_org
+            "GITHUB_ORG is set (%s) but GITHUB_TOKEN is empty. Repo discovery will fail.", settings.github_org
         )
 
 
@@ -97,13 +97,11 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     _start_time = time.monotonic()
     logger.info("CI Review Agent server starting")
     _check_config_warnings()
-    await run_tracker.clear()
 
     try:
         yield
     finally:
         logger.info("CI Review Agent server shutting down")
-        await run_tracker.clear()
 
 
 app = FastAPI(
@@ -118,6 +116,7 @@ app = FastAPI(
 async def auth_redirect_handler(request: Request, exc: AuthRedirect) -> RedirectResponse:
     if request.headers.get("HX-Request") == "true":
         from fastapi.responses import JSONResponse
+
         return JSONResponse(status_code=401, content="", headers={"HX-Redirect": "/login"})
     return RedirectResponse(url="/login", status_code=302)
 
@@ -171,9 +170,14 @@ async def sse_endpoint(request: Request, repo: str = Query("")) -> StreamingResp
             uptime = f"{int(uptime_seconds // 60)}m {int(uptime_seconds % 60)}s"
         else:
             uptime = f"{int(uptime_seconds)}s"
-        payload = json.dumps({
-            "active": active, "success": success, "failed": failed, "uptime": uptime,
-        })
+        payload = json.dumps(
+            {
+                "active": active,
+                "success": success,
+                "failed": failed,
+                "uptime": uptime,
+            }
+        )
         return f"event: metrics_update\ndata: {payload}\n\n"
 
     async def event_generator() -> AsyncIterator[str]:
@@ -233,8 +237,16 @@ def _sse_status_badge(status: str) -> str:
 async def handle_forgejo_webhook(request: Request) -> Response:
     # === INSTRUMENT: log raw request metadata ===
     raw_headers = dict(request.headers)
-    safe_headers = {k: v for k, v in raw_headers.items() if k.lower() not in ("authorization", "cookie", "x-hub-signature-256", "x-forgejo-signature")}
-    sig_header = raw_headers.get("X-Hub-Signature-256") or raw_headers.get("X-Hub-Signature") or raw_headers.get("X-Forgejo-Signature", "(none)")
+    safe_headers = {
+        k: v
+        for k, v in raw_headers.items()
+        if k.lower() not in ("authorization", "cookie", "x-hub-signature-256", "x-forgejo-signature")
+    }
+    sig_header = (
+        raw_headers.get("X-Hub-Signature-256")
+        or raw_headers.get("X-Hub-Signature")
+        or raw_headers.get("X-Forgejo-Signature", "(none)")
+    )
     event_header_raw = raw_headers.get("X-Forgejo-Event") or raw_headers.get("X-Gitea-Event") or "(none)"
     logger.info(
         "=== WEBHOOK RECEIVED === method=%s path=%s content_length=%s sig_header=%s event_header=%s headers=%s",
@@ -260,7 +272,9 @@ async def handle_forgejo_webhook(request: Request) -> Response:
         or request.headers.get("X-Forgejo-Signature")
     )
     if signature is None:
-        logger.warning("AUTH FAILURE: No signature header found (tried X-Hub-Signature-256, X-Hub-Signature, X-Forgejo-Signature)")
+        logger.warning(
+            "AUTH FAILURE: No signature header found (tried X-Hub-Signature-256, X-Hub-Signature, X-Forgejo-Signature)"
+        )
     else:
         logger.info("AUTH: Using signature header (first 20 chars): %s...", signature[:20])
     try:
@@ -272,11 +286,16 @@ async def handle_forgejo_webhook(request: Request) -> Response:
     # Accept X-Forgejo-Event (custom) or X-Gitea-Event (Forgejo/Gitea native)
     event_type = request.headers.get("X-Forgejo-Event") or request.headers.get("X-Gitea-Event") or ""
     logger.info("EVENT: event_type=%s", event_type or "(empty — will be ignored)")
-    _ALLOWED_FORGEJO_EVENTS = frozenset({
-        "push",
-        "action_run", "action_run_failure", "action_run_success", "action_run_recover",
-        "workflow_run",
-    })
+    _ALLOWED_FORGEJO_EVENTS = frozenset(
+        {
+            "push",
+            "action_run",
+            "action_run_failure",
+            "action_run_success",
+            "action_run_recover",
+            "workflow_run",
+        }
+    )
     if event_type not in _ALLOWED_FORGEJO_EVENTS:
         logger.info("EVENT IGNORED: event_type=%s not in %s", event_type, _ALLOWED_FORGEJO_EVENTS)
         return Response(status_code=200, content="Ignored event type")
@@ -343,9 +362,7 @@ async def handle_github_webhook(request: Request) -> Response:
     sig_256 = request.headers.get("X-Hub-Signature-256")
     sig_1 = request.headers.get("X-Hub-Signature")
     try:
-        verify_github_signature(
-            body, sig_256, sig_1, settings.github_webhook_secret
-        )
+        verify_github_signature(body, sig_256, sig_1, settings.github_webhook_secret)
     except WebhookVerificationError as e:
         logger.warning("GitHub webhook verification failed: %s", e)
         raise HTTPException(status_code=401, detail=str(e))

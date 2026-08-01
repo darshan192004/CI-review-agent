@@ -29,22 +29,17 @@ class CIClient(abc.ABC):
     async def fetch_logs(self, owner: str, repo: str, run_id: str) -> str: ...
 
     @abc.abstractmethod
-    async def get_run_info(
-        self, owner: str, repo: str, run_id: str
-    ) -> dict[str, Any]: ...
+    async def get_run_info(self, owner: str, repo: str, run_id: str) -> dict[str, Any]: ...
 
     @abc.abstractmethod
-    async def list_runs(
-        self, owner: str, repo: str, branch: str, limit: int = 1
-    ) -> list[dict[str, Any]]: ...
+    async def list_runs(self, owner: str, repo: str, branch: str, limit: int = 1) -> list[dict[str, Any]]: ...
 
     @abc.abstractmethod
     async def list_repos(self, org: str) -> list[str]: ...
 
     @abc.abstractmethod
-    async def get_commit_author(
-        self, owner: str, repo: str, commit_sha: str
-    ) -> tuple[str, str]: ...
+    async def get_commit_author(self, owner: str, repo: str, commit_sha: str) -> tuple[str, str]: ...
+
 
 class GitHubCIClient(CIClient):
     def _headers(self) -> dict[str, str]:
@@ -107,9 +102,7 @@ class GitHubCIClient(CIClient):
         return resp.json()
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
-    async def list_runs(
-        self, owner: str, repo: str, branch: str, limit: int = 1
-    ) -> list[dict[str, Any]]:
+    async def list_runs(self, owner: str, repo: str, branch: str, limit: int = 1) -> list[dict[str, Any]]:
         url = f"{self.base_url}/repos/{owner}/{repo}/actions/runs"
         params = {"branch": branch, "per_page": limit}
         resp = await self._client.get(url, headers=self._headers(), params=params)
@@ -123,6 +116,7 @@ class GitHubCIClient(CIClient):
         resp = await self._client.get(url, headers=self._headers(), params=params)
         resp.raise_for_status()
         return [r["full_name"] for r in resp.json()]
+
 
 class ForgejoCIClient(CIClient):
     def _headers(self) -> dict[str, str]:
@@ -151,26 +145,53 @@ class ForgejoCIClient(CIClient):
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     async def fetch_logs(self, owner: str, repo: str, run_id: str) -> str:
+        # Forgejo/Gitea actions API (run_id is the DB id, matching webhook payloads):
+        #   GET /api/v1/repos/{owner}/{repo}/actions/runs/{run_id}
+        #   GET /api/v1/repos/{owner}/{repo}/actions/runs/{run_id}/jobs   -> JSON array
+        #   GET /api/v1/repos/{owner}/{repo}/actions/jobs/{job_id}/logs   -> plaintext
         run_url = f"{self.base_url}/api/v1/repos/{owner}/{repo}/actions/runs/{run_id}"
         logger.info("=== FORGEJO API: GET run info === url=%s", run_url)
         resp = await self._client.get(run_url, headers=self._headers())
         logger.info("=== FORGEJO API: run info response === status=%d", resp.status_code)
         resp.raise_for_status()
-        run_data = resp.json()
 
-        run_index = run_data.get("index_in_repo", run_id)
-        job_index = 0
-        attempt = 1
+        jobs_url = f"{self.base_url}/api/v1/repos/{owner}/{repo}/actions/runs/{run_id}/jobs"
+        logger.info("=== FORGEJO API: GET jobs === url=%s", jobs_url)
+        jobs_resp = await self._client.get(jobs_url, headers=self._headers())
+        logger.info("=== FORGEJO API: jobs response === status=%d", jobs_resp.status_code)
+        if jobs_resp.status_code != 200:
+            logger.warning(
+                "=== FORGEJO API: jobs not available === status=%d url=%s",
+                jobs_resp.status_code,
+                jobs_url,
+            )
+            return "No failure details found"
+        jobs = jobs_resp.json()
+        if not isinstance(jobs, list):
+            jobs = (jobs or {}).get("jobs", []) or []
 
-        log_url = f"{self.base_url}/{owner}/{repo}/actions/runs/{run_index}/jobs/{job_index}/attempt/{attempt}/logs"
-        logger.info("=== FORGEJO API: GET logs === url=%s", log_url)
-        log_resp = await self._client.get(log_url, headers=self._headers())
-        logger.info("=== FORGEJO API: logs response === status=%d", log_resp.status_code)
-        if log_resp.status_code == 200:
-            return parse_ci_logs(log_resp.text[:5000])
+        all_logs: list[str] = []
+        for job in jobs:
+            job_id = job.get("id")
+            if not job_id:
+                continue
+            log_url = f"{self.base_url}/api/v1/repos/{owner}/{repo}/actions/jobs/{job_id}/logs"
+            log_resp = await self._client.get(log_url, headers=self._headers())
+            if log_resp.status_code == 200 and log_resp.text:
+                all_logs.append(f"--- Job: {job.get('name', job_id)} ---\n{log_resp.text}")
+            else:
+                job_name = job.get("name", job_id)
+                all_logs.append(
+                    f"--- Job: {job_name} (id={job_id}) — logs not available (HTTP {log_resp.status_code}) ---"
+                )
 
-        logger.warning("=== FORGEJO API: logs not available === status=%d url=%s", log_resp.status_code, log_url)
-        return "No failure details found"
+        if not all_logs:
+            return "No failure details found in jobs"
+
+        # Truncate per-job to keep the LLM payload bounded; parse_ci_logs then
+        # extracts only error-context lines.
+        raw = "\n".join(log[:8000] for log in all_logs)
+        return parse_ci_logs(raw)
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     async def get_run_info(self, owner: str, repo: str, run_id: str) -> dict[str, Any]:
@@ -180,14 +201,17 @@ class ForgejoCIClient(CIClient):
         return resp.json()
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
-    async def list_runs(
-        self, owner: str, repo: str, branch: str, limit: int = 1
-    ) -> list[dict[str, Any]]:
+    async def list_runs(self, owner: str, repo: str, branch: str, limit: int = 1) -> list[dict[str, Any]]:
         url = f"{self.base_url}/api/v1/repos/{owner}/{repo}/actions/runs"
         params = {"branch": branch, "limit": limit}
         resp = await self._client.get(url, headers=self._headers(), params=params)
         resp.raise_for_status()
-        return resp.json().get("workflow_runs", [])
+        # Forgejo v16 returns {"total_count": N, "workflow_runs": [...]}; some
+        # Gitea forks return a bare array. Accept both.
+        data = resp.json()
+        if isinstance(data, list):
+            return data
+        return data.get("workflow_runs", []) if isinstance(data, dict) else []
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     async def list_repos(self, org: str) -> list[str]:
@@ -205,6 +229,7 @@ class ForgejoCIClient(CIClient):
         resp = await self._client.get(url, headers=self._headers(), params=params)
         resp.raise_for_status()
         return [r["full_name"] for r in resp.json()]
+
 
 def create_ci_client(platform: str, token: str, base_url: str) -> CIClient:
     if platform == "github":

@@ -10,7 +10,7 @@
   
   --text-main: #f3f4f6;
   --text-muted: #9ca3af;
-  --text-dim: #6b7280;
+  --text-dim: #8b93a5;
 
   --accent-primary: #6366f1;
   --accent-primary-hover: #4f46e5;
@@ -36,7 +36,7 @@
 
   --text-main: #0f172a;
   --text-muted: #475569;
-  --text-dim: #94a3b8;
+  --text-dim: #64748b;
 
   --accent-primary: #4f46e5;
   --accent-primary-hover: #4338ca;
@@ -443,6 +443,47 @@ h1, h2, h3, h4, h5, h6 {
 
 .secret-toggle:hover {
   color: var(--text-main);
+}
+
+/* Keyboard focus visibility — visible outline only for keyboard interaction */
+.btn-primary:focus-visible,
+.btn-secondary:focus-visible,
+.btn-ghost:focus-visible,
+.nav-link:focus-visible,
+.secret-toggle:focus-visible,
+a:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+/* Loading skeleton placeholder */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--bg-surface) 25%,
+    var(--bg-surface-elevated) 50%,
+    var(--bg-surface) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.2s ease-in-out infinite;
+  border-radius: 0.375rem;
+}
+
+@keyframes shimmer {
+  to { background-position: -200% 0; }
+}
+
+/* Respect reduced-motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* ============================================================

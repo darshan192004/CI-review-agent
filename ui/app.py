@@ -278,17 +278,17 @@ async def dashboard_partial(
             <td class="text-xs text-slate-400">{e(run.get("author", "\u2014"))}</td>
         </tr>"""
 
-    html = f"""<table class="data-table">
+    html = f"""<div class="overflow-x-auto"><table class="data-table">
       <thead>
         <tr>
-          <th>Repository</th>
-          <th>Run ID</th>
-          <th>Attempt</th>
-          <th>Status</th>
-          <th>Platform</th>
-          <th>Branch</th>
-          <th>Commit</th>
-          <th>Author</th>
+          <th scope="col">Repository</th>
+          <th scope="col">Run ID</th>
+          <th scope="col">Attempt</th>
+          <th scope="col">Status</th>
+          <th scope="col">Platform</th>
+          <th scope="col">Branch</th>
+          <th scope="col">Commit</th>
+          <th scope="col">Author</th>
         </tr>
       </thead>
       <tbody>
@@ -299,7 +299,7 @@ async def dashboard_partial(
         "No webhook runs recorded yet.</td></tr>"
     }
       </tbody>
-    </table>"""
+    </table></div>"""
 
     return HTMLResponse(content=html)
 
@@ -503,17 +503,17 @@ async def seed_run_history(
             <td class="text-xs text-slate-400">{e(run.get("author", "\u2014"))}</td>
         </tr>"""
 
-    html = f"""<table class="data-table">
+    html = f"""<div class="overflow-x-auto"><table class="data-table">
       <thead>
         <tr>
-          <th>Repository</th>
-          <th>Run ID</th>
-          <th>Attempt</th>
-          <th>Status</th>
-          <th>Platform</th>
-          <th>Branch</th>
-          <th>Commit</th>
-          <th>Author</th>
+          <th scope="col">Repository</th>
+          <th scope="col">Run ID</th>
+          <th scope="col">Attempt</th>
+          <th scope="col">Status</th>
+          <th scope="col">Platform</th>
+          <th scope="col">Branch</th>
+          <th scope="col">Commit</th>
+          <th scope="col">Author</th>
         </tr>
       </thead>
       <tbody>
@@ -523,7 +523,7 @@ async def seed_run_history(
         else '<tr><td colspan="8" class="p-12 text-center text-slate-400 text-sm">No CI history found.</td></tr>'
     }
       </tbody>
-    </table>"""
+    </table></div>"""
 
     return HTMLResponse(content=html)
 

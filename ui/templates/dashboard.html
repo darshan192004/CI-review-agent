@@ -109,7 +109,7 @@ endblock %} {% block content %}
         aria-modal="true"
         aria-labelledby="discovery-popup-title"
     >
-        <div class="glass-panel max-w-md w-full mx-4 p-6 rounded-xl">
+        <div class="glass-panel max-w-md w-full mx-4 p-6 rounded-xl" tabindex="-1" role="document" aria-label="Repository discovery setup">
             <h2 id="discovery-popup-title" class="text-lg font-bold">Set up repo discovery</h2>
             <p class="text-sm text-slate-400 mt-2">
                 The agent auto-connects to CI repos the way WiFi connects to a
@@ -118,7 +118,7 @@ endblock %} {% block content %}
             <div class="mt-6 flex gap-3 justify-end">
                 <button
                     id="discovery-auto"
-                    class="px-4 py-2 rounded-lg ci-bg-input ci-border text-sm ci-text-muted hover:ci-border-dim"
+                    class="px-4 py-2 rounded-lg ci-bg-input ci-border text-sm text-slate-700 hover:ci-border-dim"
                     type="button"
                 >
                     Use auto-discovery
@@ -282,23 +282,39 @@ endblock %} {% block content %}
         </div>
 
         <!-- Initial state container — one-shot HTMX load to seed history, then SSE for live updates -->
-        <div id="runs-table-body" class="max-h-[500px] overflow-y-auto"
+        <div id="runs-table-body" class="max-h-[500px] overflow-y-auto overflow-x-auto"
              hx-get="/api/runs/history"
              hx-trigger="load"
              hx-target="this"
-             hx-swap="innerHTML">
+             hx-swap="innerHTML"
+             hx-indicator="#runs-skeleton">
+            <div id="runs-skeleton" class="htmx-indicator p-6 space-y-4" aria-hidden="true">
+                {% for _ in range(4) %}
+                <div class="flex items-center gap-4">
+                    <div class="skeleton w-24 h-4"></div>
+                    <div class="skeleton w-12 h-4"></div>
+                    <div class="skeleton w-12 h-4"></div>
+                    <div class="skeleton w-20 h-5 rounded-full"></div>
+                    <div class="skeleton w-16 h-4"></div>
+                    <div class="skeleton w-16 h-4"></div>
+                    <div class="skeleton w-14 h-4"></div>
+                    <div class="skeleton w-20 h-4"></div>
+                </div>
+                {% endfor %}
+            </div>
             {% if recent_runs %}
+            <div class="overflow-x-auto">
             <table class="data-table">
                 <thead>
                     <tr>
-                        <th>Repository</th>
-                        <th>Run ID</th>
-                        <th>Attempt</th>
-                        <th>Status</th>
-                        <th>Platform</th>
-                        <th>Branch</th>
-                        <th>Commit</th>
-                        <th>Author</th>
+                        <th scope="col">Repository</th>
+                        <th scope="col">Run ID</th>
+                        <th scope="col">Attempt</th>
+                        <th scope="col">Status</th>
+                        <th scope="col">Platform</th>
+                        <th scope="col">Branch</th>
+                        <th scope="col">Commit</th>
+                        <th scope="col">Author</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -334,6 +350,7 @@ endblock %} {% block content %}
                     {% endfor %}
                 </tbody>
             </table>
+            </div>
             {% else %}
             <div class="p-12 text-center ci-text-muted" id="empty-state">
                 <svg
@@ -430,20 +447,30 @@ endblock %} {% block content %}
             el.classList.toggle("hidden", !show);
         }
 
+        var lastFocused = null;
+
+        function onPopupKeydown(e) {
+            if (e.key === "Escape") hideDiscoveryPopup();
+        }
+
         function showDiscoveryPopup() {
             var popup = document.getElementById("discovery-popup");
-            if (popup) {
-                popup.classList.remove("hidden");
-                popup.classList.add("flex");
-            }
+            if (!popup) return;
+            lastFocused = document.activeElement;
+            popup.classList.remove("hidden");
+            popup.classList.add("flex");
+            var panel = popup.querySelector(".glass-panel");
+            if (panel) panel.focus();
+            document.addEventListener("keydown", onPopupKeydown);
         }
 
         function hideDiscoveryPopup() {
             var popup = document.getElementById("discovery-popup");
-            if (popup) {
-                popup.classList.add("hidden");
-                popup.classList.remove("flex");
-            }
+            if (!popup) return;
+            popup.classList.add("hidden");
+            popup.classList.remove("flex");
+            document.removeEventListener("keydown", onPopupKeydown);
+            if (lastFocused && lastFocused.focus) lastFocused.focus();
         }
 
         function loadRepos(opts) {

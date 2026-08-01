@@ -26,6 +26,16 @@ def _viewer_cookie() -> dict[str, str]:
     return {"session_token": token}
 
 
+@pytest.fixture
+def _seeded_runs_db(tmp_path):
+    import services.run_tracker as rt
+
+    original = rt._DB_PATH
+    rt._DB_PATH = tmp_path / "ci_runs.db"
+    yield
+    rt._DB_PATH = original
+
+
 class TestLoginPage:
     def test_login_page_renders(self) -> None:
         resp = _client.get("/login")
@@ -79,6 +89,31 @@ class TestDashboardPage:
         assert "repo-empty-state" in resp.text
         assert "/config" in resp.text
 
+    def test_contains_history_skeleton(self) -> None:
+        resp = _client.get("/", cookies=_admin_cookie())
+        assert "runs-skeleton" in resp.text
+        assert 'hx-indicator="#runs-skeleton"' in resp.text
+
+    def test_discovery_popup_has_a11y_attributes(self) -> None:
+        resp = _client.get("/", cookies=_admin_cookie())
+        assert 'role="dialog"' in resp.text
+        assert 'aria-modal="true"' in resp.text
+        assert 'aria-labelledby="discovery-popup-title"' in resp.text
+
+    def test_repo_status_announces_live(self) -> None:
+        resp = _client.get("/", cookies=_admin_cookie())
+        assert 'aria-live="polite"' in resp.text
+
+    @pytest.mark.asyncio
+    async def test_table_headers_have_scope(self, _seeded_runs_db) -> None:
+        from services.run_tracker import run_tracker
+
+        await run_tracker.record("owner/alpha", "1", status="PASSED", platform="github")
+
+        resp = _client.get("/", cookies=_admin_cookie())
+        assert 'scope="col"' in resp.text
+        assert "overflow-x-auto" in resp.text
+
     def test_unauthenticated_redirects(self) -> None:
         resp = _client.get("/", follow_redirects=False)
         assert resp.status_code == 302
@@ -130,6 +165,11 @@ class TestConfigPage:
         assert "forgejo_base_url" in resp.text
         assert "auto_fix_reruns" in resp.text
 
+    def test_theme_toggle_has_aria_label(self) -> None:
+        resp = _client.get("/config", cookies=_admin_cookie())
+        assert 'aria-label="Toggle color theme"' in resp.text
+        assert "aria-pressed" in resp.text
+
 
 class TestRunsPage:
     def test_returns_200(self) -> None:
@@ -147,6 +187,32 @@ class TestRunsPage:
     def test_filter_by_platform(self) -> None:
         resp = _client.get("/runs?platform=github", cookies=_admin_cookie())
         assert resp.status_code == 200
+
+    def test_contains_filter_aria_labels(self) -> None:
+        resp = _client.get("/runs", cookies=_admin_cookie())
+        assert 'aria-label="Search runs"' in resp.text
+        assert 'aria-label="Filter by status"' in resp.text
+        assert 'aria-label="Filter by platform"' in resp.text
+
+    def test_contains_filter_loading_indicator(self) -> None:
+        resp = _client.get("/runs", cookies=_admin_cookie())
+        assert "runs-filter-spinner" in resp.text
+        assert "htmx-indicator" in resp.text
+        assert 'hx-indicator="#runs-filter-spinner"' in resp.text
+
+    def test_runs_container_allows_horizontal_scroll(self) -> None:
+        resp = _client.get("/runs", cookies=_admin_cookie())
+        assert 'id="runs-container"' in resp.text
+        assert "overflow-x-auto" in resp.text
+
+    @pytest.mark.asyncio
+    async def test_table_headers_have_scope(self, _seeded_runs_db) -> None:
+        from services.run_tracker import run_tracker
+
+        await run_tracker.record("owner/alpha", "1", status="PASSED", platform="github")
+
+        resp = _client.get("/runs", cookies=_admin_cookie())
+        assert 'scope="col"' in resp.text
 
 
 class TestRunsPageHxFragment:
@@ -215,6 +281,45 @@ class TestRunsPageHxFragment:
         assert "<!DOCTYPE html>" not in resp.text
         assert "owner/beta" in resp.text
         assert "owner/alpha" not in resp.text
+
+    @pytest.mark.asyncio
+    async def test_hx_fragment_wraps_table_for_scroll(self, _isolated_runs_db) -> None:
+        from services.run_tracker import run_tracker
+
+        await run_tracker.record("owner/alpha", "1", status="PASSED", platform="github")
+
+        resp = _client.get("/runs", headers={"HX-Request": "true"}, cookies=_admin_cookie())
+        assert resp.status_code == 200
+        assert 'class="overflow-x-auto"' in resp.text
+        assert 'scope="col"' in resp.text
+
+
+class TestA11yCss:
+    def test_stylesheet_served(self) -> None:
+        resp = _client.get("/static/css/styles.css")
+        assert resp.status_code == 200
+        assert "text/css" in resp.headers["content-type"]
+
+    def test_reduced_motion_supported(self) -> None:
+        resp = _client.get("/static/css/styles.css")
+        assert "prefers-reduced-motion" in resp.text
+
+    def test_focus_visible_rules_present(self) -> None:
+        resp = _client.get("/static/css/styles.css")
+        assert ":focus-visible" in resp.text
+
+    def test_skeleton_styles_present(self) -> None:
+        resp = _client.get("/static/css/styles.css")
+        assert ".skeleton" in resp.text
+        assert "shimmer" in resp.text
+
+    def test_dim_text_dark_meets_contrast(self) -> None:
+        resp = _client.get("/static/css/styles.css")
+        assert "--text-dim: #8b93a5" in resp.text
+
+    def test_dim_text_light_meets_contrast(self) -> None:
+        resp = _client.get("/static/css/styles.css")
+        assert "--text-dim: #64748b" in resp.text
 
 
 class TestSettingsAPI:

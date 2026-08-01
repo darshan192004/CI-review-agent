@@ -5,11 +5,13 @@ document.addEventListener("DOMContentLoaded", function () {
 
   const themeToggle = document.getElementById("theme-toggle");
   if (themeToggle) {
+    themeToggle.setAttribute("aria-pressed", savedTheme === "light" ? "true" : "false");
     themeToggle.addEventListener("click", function () {
       const current = document.documentElement.getAttribute("data-theme");
       const next = current === "dark" ? "light" : "dark";
       document.documentElement.setAttribute("data-theme", next);
       localStorage.setItem("theme", next);
+      themeToggle.setAttribute("aria-pressed", next === "light" ? "true" : "false");
     });
   }
 

@@ -19,12 +19,12 @@
     <div class="flex flex-wrap items-center gap-3">
       <!-- Search Input -->
       <div class="relative min-w-[220px]">
-        <input type="text" id="run-search-input" onkeyup="filterRunsTable()" placeholder="Search repo or run ID..." class="input-field pl-9 text-xs">
+        <input type="text" id="run-search-input" onkeyup="filterRunsTable()" aria-label="Search runs" placeholder="Search repo or run ID..." class="input-field pl-9 text-xs">
         <svg class="w-4 h-4 text-slate-500 absolute left-3 top-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
       </div>
 
       <!-- Status Filter -->
-      <select id="filter-status" hx-get="/runs" hx-target="#runs-container" hx-swap="innerHTML" name="status" class="select-field text-xs w-auto">
+      <select id="filter-status" hx-get="/runs" hx-target="#runs-container" hx-swap="innerHTML" hx-indicator="#runs-filter-spinner" name="status" aria-label="Filter by status" class="select-field text-xs w-auto">
         <option value="">All Statuses</option>
         <option value="processing">Processing</option>
         <option value="AGENT_WORKING">Agent Working</option>
@@ -34,16 +34,21 @@
       </select>
 
       <!-- Platform Filter -->
-      <select id="filter-platform" hx-get="/runs" hx-target="#runs-container" hx-swap="innerHTML" name="platform" class="select-field text-xs w-auto">
+      <select id="filter-platform" hx-get="/runs" hx-target="#runs-container" hx-swap="innerHTML" hx-indicator="#runs-filter-spinner" name="platform" aria-label="Filter by platform" class="select-field text-xs w-auto">
         <option value="">All Platforms</option>
         <option value="github">GitHub</option>
         <option value="forgejo">Forgejo</option>
       </select>
+
+      <!-- Filter Loading Spinner -->
+      <span id="runs-filter-spinner" class="htmx-indicator" aria-hidden="true">
+        <span class="spinner"></span>
+      </span>
     </div>
   </div>
 
   <!-- Runs Container -->
-  <div id="runs-container" class="glass-panel max-h-[600px] overflow-y-auto overflow-x-hidden">
+  <div id="runs-container" class="glass-panel max-h-[600px] overflow-y-auto overflow-x-auto" aria-live="polite">
     {% include "partials/runs_table.html" %}
   </div>
 

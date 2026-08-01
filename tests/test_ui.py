@@ -101,6 +101,35 @@ class TestConfigPage:
         assert "mcp_server_command" in resp.text
         assert "messaging_platform" in resp.text
 
+    def test_contains_discovery_fields(self) -> None:
+        resp = _client.get("/config", cookies=_admin_cookie())
+        assert "forgejo_discovery_mode" in resp.text
+        assert "github_discovery_mode" in resp.text
+        assert "forgejo_org" in resp.text
+        assert "github_org" in resp.text
+        assert "forgejo_username" in resp.text
+        assert "github_username" in resp.text
+
+    def test_contains_rate_limit_fields(self) -> None:
+        resp = _client.get("/config", cookies=_admin_cookie())
+        assert "llm_rate_limit_per_minute" in resp.text
+        assert "llm_rate_limit_burst" in resp.text
+        assert "llm_max_retries" in resp.text
+        assert "llm_retry_backoff_seconds" in resp.text
+
+    def test_contains_server_fields_with_restart_hint(self) -> None:
+        resp = _client.get("/config", cookies=_admin_cookie())
+        assert "server_host" in resp.text
+        assert "server_port" in resp.text
+        assert "restart" in resp.text.lower()
+
+    def test_contains_webhook_secrets_and_remaining_keys(self) -> None:
+        resp = _client.get("/config", cookies=_admin_cookie())
+        assert "forgejo_webhook_secret" in resp.text
+        assert "github_webhook_secret" in resp.text
+        assert "forgejo_base_url" in resp.text
+        assert "auto_fix_reruns" in resp.text
+
 
 class TestRunsPage:
     def test_returns_200(self) -> None:
@@ -244,6 +273,82 @@ class TestSettingsAPI:
         resp = _client.get("/api/settings", follow_redirects=False)
         assert resp.status_code == 302
         assert "/login" in resp.headers["location"]
+
+    def test_put_rate_limits_persist_and_coerce(self) -> None:
+        payload = {
+            "llm_rate_limit_per_minute": "30",
+            "llm_rate_limit_burst": "10",
+            "llm_max_retries": "5",
+            "llm_retry_backoff_seconds": "1.5",
+        }
+        with patch("ui.app.write_env") as mock_write:
+            resp = _client.put(
+                "/api/settings",
+                content=json.dumps(payload),
+                headers={"Content-Type": "application/json"},
+                cookies=_admin_cookie(),
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["saved"] == 4
+        for key in payload:
+            assert key in data["keys"]
+        mock_write.assert_called_once()
+        from config import settings as live
+
+        assert live.llm_rate_limit_per_minute == 30
+        assert live.llm_rate_limit_burst == 10
+        assert live.llm_max_retries == 5
+        assert live.llm_retry_backoff_seconds == 1.5
+
+    def test_put_empty_rate_limit_uses_disabled_default(self) -> None:
+        with patch("ui.app.write_env") as mock_write:
+            resp = _client.put(
+                "/api/settings",
+                content=json.dumps({"llm_rate_limit_per_minute": ""}),
+                headers={"Content-Type": "application/json"},
+                cookies=_admin_cookie(),
+            )
+        assert resp.status_code == 200
+        assert resp.json()["saved"] == 1
+        written = mock_write.call_args.args[0]
+        assert written["llm_rate_limit_per_minute"] == "0"
+
+    def test_put_webhook_secrets_persist(self) -> None:
+        payload = {"forgejo_webhook_secret": "fj-secret", "github_webhook_secret": "gh-secret"}
+        with patch("ui.app.write_env") as mock_write:
+            resp = _client.put(
+                "/api/settings",
+                content=json.dumps(payload),
+                headers={"Content-Type": "application/json"},
+                cookies=_admin_cookie(),
+            )
+        assert resp.status_code == 200
+        assert resp.json()["saved"] == 2
+        written = mock_write.call_args.args[0]
+        assert written["forgejo_webhook_secret"] == "fj-secret"
+        assert written["github_webhook_secret"] == "gh-secret"
+
+    def test_put_form_encoded_discovery_key(self) -> None:
+        with patch("ui.app.write_env") as mock_write:
+            resp = _client.put("/api/settings", data={"forgejo_org": "acme"}, cookies=_admin_cookie())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "forgejo_org" in data["keys"]
+        written = mock_write.call_args.args[0]
+        assert written["forgejo_org"] == "acme"
+
+    def test_put_ignores_redacted_secrets(self) -> None:
+        with patch("ui.app.write_env") as mock_write:
+            resp = _client.put(
+                "/api/settings",
+                content=json.dumps({"github_token": "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"}),
+                headers={"Content-Type": "application/json"},
+                cookies=_admin_cookie(),
+            )
+        assert resp.status_code == 200
+        assert resp.json()["saved"] == 0
+        mock_write.assert_not_called()
 
 
 class TestDashboardPartial:

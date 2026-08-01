@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import html as html_mod
 import logging
 import time
@@ -129,6 +130,18 @@ def _get_settings() -> Any:
         "auto_fix_reruns",
         "git_repo_path",
         "git_default_branch",
+        "forgejo_org",
+        "github_org",
+        "forgejo_discovery_mode",
+        "github_discovery_mode",
+        "forgejo_username",
+        "github_username",
+        "llm_rate_limit_per_minute",
+        "llm_rate_limit_burst",
+        "llm_max_retries",
+        "llm_retry_backoff_seconds",
+        "server_host",
+        "server_port",
     ]:
         setattr(s, k, redacted.get(k, getattr(settings, k, "")))
     return s
@@ -525,6 +538,26 @@ async def get_settings(_user: User = Depends(get_current_user)) -> dict[str, str
     return read_env_redacted()
 
 
+_INT_SETTING_KEYS = {
+    "server_port",
+    "max_retry_attempts",
+    "log_max_tokens",
+    "llm_rate_limit_per_minute",
+    "llm_rate_limit_burst",
+    "llm_max_retries",
+}
+_FLOAT_SETTING_KEYS = {"llm_retry_backoff_seconds"}
+_SETTING_NUMERIC_DEFAULTS = {
+    "server_port": "8000",
+    "max_retry_attempts": "3",
+    "log_max_tokens": "4000",
+    "llm_rate_limit_per_minute": "0",
+    "llm_rate_limit_burst": "0",
+    "llm_max_retries": "3",
+    "llm_retry_backoff_seconds": "2.0",
+}
+
+
 @router.put("/api/settings")
 async def update_settings(request: Request, _user: User = Depends(require_admin_role)) -> JSONResponse:
     body: dict[str, Any] = {}
@@ -580,22 +613,36 @@ async def update_settings(request: Request, _user: User = Depends(require_admin_
         "git_default_branch",
         "server_host",
         "server_port",
+        "forgejo_webhook_secret",
+        "github_webhook_secret",
+        "llm_rate_limit_per_minute",
+        "llm_rate_limit_burst",
+        "llm_max_retries",
+        "llm_retry_backoff_seconds",
     }
 
     # Filter out redacted values ("••••••••") so we don't overwrite real secrets
     updates = {k: str(v).strip() for k, v in body.items() if k in allowed_keys and str(v).strip() != "••••••••"}
 
+    # Empty numeric fields fall back to their defaults so ".env" never stores ""
+    # (an empty int would fail pydantic validation on the next Settings() load).
+    for k in list(updates):
+        if k in _SETTING_NUMERIC_DEFAULTS and updates[k] == "":
+            updates[k] = _SETTING_NUMERIC_DEFAULTS[k]
+
     if updates:
         write_env(updates)
         for k, v in updates.items():
-            if hasattr(settings, k):
-                if k in ("max_retry_attempts", "log_max_tokens", "server_port"):
-                    try:
-                        setattr(settings, k, int(v))
-                    except ValueError:
-                        pass
-                else:
-                    setattr(settings, k, v)
+            if not hasattr(settings, k):
+                continue
+            if k in _INT_SETTING_KEYS:
+                with contextlib.suppress(ValueError):
+                    setattr(settings, k, int(v))
+            elif k in _FLOAT_SETTING_KEYS:
+                with contextlib.suppress(ValueError):
+                    setattr(settings, k, float(v))
+            else:
+                setattr(settings, k, v)
 
     return JSONResponse(content={"saved": len(updates), "keys": list(updates.keys())})
 

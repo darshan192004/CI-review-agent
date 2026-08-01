@@ -163,6 +163,41 @@
         </div>
       </div>
 
+      <!-- 5. LLM Rate Limits -->
+      <div class="glass-panel p-6 config-section space-y-5">
+        <div class="flex items-center gap-3">
+          <div class="p-2.5 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          </div>
+          <div>
+            <h3 class="font-semibold text-lg">LLM Rate Limits</h3>
+            <p class="text-xs ci-text-muted">Guard against upstream 429s on every provider; 0 disables the limiter</p>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+          <div>
+            <label class="block text-xs font-semibold ci-text-main uppercase tracking-wider mb-1.5">Requests per Minute</label>
+            <input type="number" name="llm_rate_limit_per_minute" value="{{ settings.llm_rate_limit_per_minute }}" min="0" class="input-field font-mono text-xs">
+            <p class="text-[10px] ci-text-dim mt-1">0 disables rate limiting entirely</p>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold ci-text-main uppercase tracking-wider mb-1.5">Burst Allowance</label>
+            <input type="number" name="llm_rate_limit_burst" value="{{ settings.llm_rate_limit_burst }}" min="0" class="input-field font-mono text-xs">
+            <p class="text-[10px] ci-text-dim mt-1">0 defaults to the per-minute rate</p>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold ci-text-main uppercase tracking-wider mb-1.5">Max Retries</label>
+            <input type="number" name="llm_max_retries" value="{{ settings.llm_max_retries }}" min="0" class="input-field font-mono text-xs">
+            <p class="text-[10px] ci-text-dim mt-1">Retries on 429 / transient 5xx / network errors</p>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold ci-text-main uppercase tracking-wider mb-1.5">Retry Backoff (seconds)</label>
+            <input type="number" step="0.1" name="llm_retry_backoff_seconds" value="{{ settings.llm_retry_backoff_seconds }}" min="0" class="input-field font-mono text-xs">
+          </div>
+        </div>
+      </div>
+
       <!-- 2. Agent Execution Tuning & Checkpointing Engine -->
       <div class="glass-panel p-6 config-section space-y-5">
         <div class="flex items-center gap-3">
@@ -203,6 +238,15 @@
               <option value="16000" {% if settings.log_max_tokens == 16000 %}selected{% endif %}>16,000 Tokens (Deep log dumps)</option>
             </select>
           </div>
+
+          <div>
+            <label class="block text-xs font-semibold ci-text-main uppercase tracking-wider mb-1.5">Auto-Fix on Rerun Webhooks</label>
+            <select name="auto_fix_reruns" class="select-field">
+              <option value="true" {% if settings.auto_fix_reruns == 'true' %}selected{% endif %}>Enabled (Trigger agent on rerun webhooks)</option>
+              <option value="false" {% if settings.auto_fix_reruns == 'false' %}selected{% endif %}>Disabled (Track status only)</option>
+            </select>
+            <p class="text-[10px] ci-text-dim mt-1">Re-invokes the agent when a rerun webhook arrives for a completed run</p>
+          </div>
         </div>
       </div>
 
@@ -236,6 +280,32 @@
               <button type="button" onclick="toggleSecret('forgejo_token', this)" class="secret-toggle">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
               </button>
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold ci-text-main uppercase tracking-wider mb-1.5">Forgejo Base URL</label>
+            <input type="text" name="forgejo_base_url" value="{{ settings.forgejo_base_url }}" placeholder="https://forgejo.example.com" class="input-field font-mono text-xs">
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-semibold ci-text-main uppercase tracking-wider mb-1.5">GitHub Webhook Secret</label>
+              <div class="secret-wrapper">
+                <input type="password" id="github_webhook_secret" name="github_webhook_secret" value="{{ settings.github_webhook_secret }}" placeholder="webhook secret" class="input-field font-mono text-xs">
+                <button type="button" onclick="toggleSecret('github_webhook_secret', this)" class="secret-toggle">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                </button>
+              </div>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold ci-text-main uppercase tracking-wider mb-1.5">Forgejo Webhook Secret</label>
+              <div class="secret-wrapper">
+                <input type="password" id="forgejo_webhook_secret" name="forgejo_webhook_secret" value="{{ settings.forgejo_webhook_secret }}" placeholder="webhook secret" class="input-field font-mono text-xs">
+                <button type="button" onclick="toggleSecret('forgejo_webhook_secret', this)" class="secret-toggle">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -274,6 +344,90 @@
             </button>
           </div>
         </div>
+      </div>
+
+      <!-- 6. Repository Discovery -->
+      <div class="glass-panel p-6 config-section space-y-5 md:col-span-2">
+        <div class="flex items-center gap-3">
+          <div class="p-2.5 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.07c3.9-3.893 10.15-3.893 14.05 0M4.08 8.925c5.837-5.825 15.08-5.825 20.92 0"/></svg>
+          </div>
+          <div>
+            <h3 class="font-semibold text-lg">Repository Discovery</h3>
+            <p class="text-xs ci-text-muted">The agent auto-connects to CI repos per platform — like WiFi picking a network in range</p>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
+          <div class="p-4 ci-panel-bg space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-semibold text-indigo-400">Forgejo</span>
+            </div>
+            <div>
+              <label class="block text-[11px] ci-text-muted mb-1">Discovery Scope</label>
+              <select name="forgejo_discovery_mode" class="select-field text-xs">
+                <option value="auto" {% if settings.forgejo_discovery_mode == 'auto' %}selected{% endif %}>Auto (token owner's repos)</option>
+                <option value="org" {% if settings.forgejo_discovery_mode == 'org' %}selected{% endif %}>Organization</option>
+                <option value="user" {% if settings.forgejo_discovery_mode == 'user' %}selected{% endif %}>User</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-[11px] ci-text-muted mb-1">Organization (org scope)</label>
+              <input type="text" name="forgejo_org" value="{{ settings.forgejo_org }}" placeholder="my-org" class="input-field font-mono text-xs">
+            </div>
+            <div>
+              <label class="block text-[11px] ci-text-muted mb-1">Username (user scope)</label>
+              <input type="text" name="forgejo_username" value="{{ settings.forgejo_username }}" placeholder="my-username" class="input-field font-mono text-xs">
+            </div>
+          </div>
+
+          <div class="p-4 ci-panel-bg space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-semibold text-slate-400">GitHub</span>
+            </div>
+            <div>
+              <label class="block text-[11px] ci-text-muted mb-1">Discovery Scope</label>
+              <select name="github_discovery_mode" class="select-field text-xs">
+                <option value="auto" {% if settings.github_discovery_mode == 'auto' %}selected{% endif %}>Auto (token owner's repos)</option>
+                <option value="org" {% if settings.github_discovery_mode == 'org' %}selected{% endif %}>Organization</option>
+                <option value="user" {% if settings.github_discovery_mode == 'user' %}selected{% endif %}>User</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-[11px] ci-text-muted mb-1">Organization (org scope)</label>
+              <input type="text" name="github_org" value="{{ settings.github_org }}" placeholder="my-org" class="input-field font-mono text-xs">
+            </div>
+            <div>
+              <label class="block text-[11px] ci-text-muted mb-1">Username (user scope)</label>
+              <input type="text" name="github_username" value="{{ settings.github_username }}" placeholder="my-username" class="input-field font-mono text-xs">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 7. Server Binding -->
+      <div class="glass-panel p-6 config-section space-y-5">
+        <div class="flex items-center gap-3">
+          <div class="p-2.5 rounded-lg bg-rose-500/10 text-rose-400 border border-rose-500/20">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/></svg>
+          </div>
+          <div>
+            <h3 class="font-semibold text-lg">Server Binding</h3>
+            <p class="text-xs ci-text-muted">Host and port the web dashboard binds to</p>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+          <div>
+            <label class="block text-xs font-semibold ci-text-main uppercase tracking-wider mb-1.5">Bind Host</label>
+            <input type="text" name="server_host" value="{{ settings.server_host }}" placeholder="0.0.0.0" class="input-field font-mono text-xs">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold ci-text-main uppercase tracking-wider mb-1.5">Bind Port</label>
+            <input type="number" name="server_port" value="{{ settings.server_port }}" placeholder="8000" min="1" max="65535" class="input-field font-mono text-xs">
+          </div>
+        </div>
+        <p class="text-[10px] ci-text-dim">Changes to host and port require a restart of the agent to take effect.</p>
       </div>
 
       <!-- 4. Universal Messaging & Webhook Alerts -->

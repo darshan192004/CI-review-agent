@@ -337,21 +337,23 @@ async def list_repos(_user: User = Depends(get_current_user)) -> JSONResponse:
 
     Merges repos from two sources:
       1. Webhook history (repos that have sent webhooks)
-      2. CI API discovery (repos the token can access)
+      2. CI API discovery (repos the token can access), across both platforms.
+
+    Returns a structured payload so the UI can distinguish "connected",
+    "not configured", and "error" states instead of showing an empty dropdown.
     """
-    from services.repo_discovery import discover_repos, get_known_repos
+    from services.repo_discovery import discover_repos, get_known_repos, is_discovery_configured
 
     known_repos = await get_known_repos()
 
-    org = settings.forgejo_org or settings.github_org or ""
-    platform = "forgejo" if settings.forgejo_org else "github"
-    if org:
-        try:
-            discovered = await discover_repos(org, platform)
-        except Exception:
-            discovered = []
-    else:
-        discovered = []
+    results = [await discover_repos("forgejo"), await discover_repos("github")]
+    ok_results = [r for r in results if r["status"] == "ok"]
+
+    discovered: list[str] = []
+    for result in ok_results:
+        for repo in result["repos"]:
+            if repo not in discovered:
+                discovered.append(repo)
 
     seen: set[str] = set(discovered)
     all_repos = list(discovered)
@@ -390,7 +392,34 @@ async def list_repos(_user: User = Depends(get_current_user)) -> JSONResponse:
         for repo in all_repos
     ]
 
-    return JSONResponse(content={"repos": repos_data, "org": org})
+    status, detail = _summarize_discovery(results)
+
+    return JSONResponse(
+        content={
+            "repos": repos_data,
+            "status": status,
+            "detail": detail,
+            "configured": is_discovery_configured(),
+        }
+    )
+
+
+def _summarize_discovery(results: list[dict[str, Any]]) -> tuple[str, str]:
+    ok = [r for r in results if r["status"] == "ok"]
+    if ok:
+        return "ok", " ".join(r["detail"] for r in ok)
+    errors = [r for r in results if r["status"] == "error"]
+    if errors:
+        return "error", errors[0]["detail"]
+    return "not_configured", "No CI token configured. Add a Forgejo or GitHub token in Settings."
+
+
+@router.post("/api/discovery/dismiss")
+async def dismiss_discovery(_user: User = Depends(require_admin_role)) -> JSONResponse:
+    """Mark discovery as configured so the first-run popup stops showing."""
+    write_env({"discovery_configured": "true"})
+    settings.discovery_configured = "true"
+    return JSONResponse(content={"ok": True})
 
 
 # ---------------------------------------------------------------------------
@@ -508,8 +537,11 @@ async def update_settings(request: Request, _user: User = Depends(require_admin_
         "llm_provider",
         "forgejo_org",
         "github_org",
-        "forgejo_webhook_secret",
-        "github_webhook_secret",
+        "forgejo_discovery_mode",
+        "github_discovery_mode",
+        "forgejo_username",
+        "github_username",
+        "discovery_configured",
         "max_retry_attempts",
         "log_max_tokens",
         "checkpointer_type",

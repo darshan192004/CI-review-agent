@@ -35,7 +35,7 @@ class CIClient(abc.ABC):
     async def list_runs(self, owner: str, repo: str, branch: str, limit: int = 1) -> list[dict[str, Any]]: ...
 
     @abc.abstractmethod
-    async def list_repos(self, org: str) -> list[str]: ...
+    async def list_repos(self, scope: str, value: str = "") -> list[str]: ...
 
     @abc.abstractmethod
     async def get_commit_author(self, owner: str, repo: str, commit_sha: str) -> tuple[str, str]: ...
@@ -110,9 +110,16 @@ class GitHubCIClient(CIClient):
         return resp.json().get("workflow_runs", [])
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
-    async def list_repos(self, org: str) -> list[str]:
-        url = f"{self.base_url}/orgs/{org}/repos"
-        params = {"per_page": 100, "type": "all"}
+    async def list_repos(self, scope: str, value: str = "") -> list[str]:
+        if scope == "org":
+            url = f"{self.base_url}/orgs/{value}/repos"
+            params = {"per_page": 100, "type": "all"}
+        elif scope == "user":
+            url = f"{self.base_url}/users/{value}/repos"
+            params = {"per_page": 100}
+        else:
+            url = f"{self.base_url}/user/repos"
+            params = {"per_page": 100}
         resp = await self._client.get(url, headers=self._headers(), params=params)
         resp.raise_for_status()
         return [r["full_name"] for r in resp.json()]
@@ -214,17 +221,23 @@ class ForgejoCIClient(CIClient):
         return data.get("workflow_runs", []) if isinstance(data, dict) else []
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
-    async def list_repos(self, org: str) -> list[str]:
-        try:
-            url = f"{self.base_url}/api/v1/orgs/{org}/repos"
-            params = {"limit": 100}
-            resp = await self._client.get(url, headers=self._headers(), params=params)
-            resp.raise_for_status()
-            return [r["full_name"] for r in resp.json()]
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code != 404:
-                raise
-        url = f"{self.base_url}/api/v1/users/{org}/repos"
+    async def list_repos(self, scope: str, value: str = "") -> list[str]:
+        if scope == "org":
+            try:
+                url = f"{self.base_url}/api/v1/orgs/{value}/repos"
+                params = {"limit": 100}
+                resp = await self._client.get(url, headers=self._headers(), params=params)
+                resp.raise_for_status()
+                return [r["full_name"] for r in resp.json()]
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code != 404:
+                    raise
+            # Legacy fallback: the "org" setting may actually hold a username
+            url = f"{self.base_url}/api/v1/users/{value}/repos"
+        elif scope == "user":
+            url = f"{self.base_url}/api/v1/users/{value}/repos"
+        else:
+            url = f"{self.base_url}/api/v1/user/repos"
         params = {"limit": 100}
         resp = await self._client.get(url, headers=self._headers(), params=params)
         resp.raise_for_status()

@@ -93,6 +93,14 @@ class Settings(BaseSettings):
     forgejo_org: str = ""
     github_org: str = ""
 
+    # Discovery scope: "auto" (token owner's own repos) | "org" | "user"
+    forgejo_discovery_mode: str = "auto"
+    github_discovery_mode: str = "auto"
+    forgejo_username: str = ""
+    github_username: str = ""
+    # First-run flag: set to "true" once the admin explicitly configures discovery
+    discovery_configured: str = "false"
+
     # Server
     server_host: str = "0.0.0.0"
     server_port: int = 8000

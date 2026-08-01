@@ -316,3 +316,101 @@ class TestClearHistory:
         resp = _client.post("/api/clear-history", cookies=_admin_cookie())
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
+
+
+class TestReposAPI:
+    @pytest.fixture
+    def _isolated_runs_db(self, tmp_path):
+        import services.run_tracker as rt
+
+        original = rt._DB_PATH
+        rt._DB_PATH = tmp_path / "ci_runs.db"
+        yield
+        rt._DB_PATH = original
+
+    @pytest.mark.asyncio
+    async def test_merges_discovery_and_known_repos(self, _isolated_runs_db) -> None:
+        from services.run_tracker import run_tracker
+
+        await run_tracker.record("owner/known", "7", status="FAILED", platform="github")
+
+        with (
+            patch("services.repo_discovery.discover_repos", new_callable=AsyncMock) as mock,
+            patch("services.repo_discovery.is_discovery_configured", return_value=False),
+        ):
+            mock.side_effect = [
+                {
+                    "status": "not_configured",
+                    "repos": [],
+                    "detail": "No Forgejo token configured.",
+                    "configured": False,
+                },
+                {
+                    "status": "ok",
+                    "repos": ["owner/repo-a", "owner/repo-b"],
+                    "detail": "Discovered 2 repos.",
+                    "configured": False,
+                },
+            ]
+            resp = _client.get("/api/repos", cookies=_admin_cookie())
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["configured"] is False
+        names = [r["name"] for r in data["repos"]]
+        assert "owner/repo-a" in names
+        assert "owner/repo-b" in names
+        assert "owner/known" in names
+        assert mock.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_reports_not_configured_when_no_token(self, _isolated_runs_db) -> None:
+        with (
+            patch("services.repo_discovery.discover_repos", new_callable=AsyncMock) as mock,
+            patch("services.repo_discovery.is_discovery_configured", return_value=False),
+        ):
+            mock.side_effect = [
+                {
+                    "status": "not_configured",
+                    "repos": [],
+                    "detail": "No Forgejo token configured.",
+                    "configured": False,
+                },
+                {"status": "not_configured", "repos": [], "detail": "No GitHub token configured.", "configured": False},
+            ]
+            resp = _client.get("/api/repos", cookies=_admin_cookie())
+
+        data = resp.json()
+        assert data["status"] == "not_configured"
+        assert data["repos"] == []
+        assert "token" in data["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_reports_error_status(self, _isolated_runs_db) -> None:
+        with (
+            patch("services.repo_discovery.discover_repos", new_callable=AsyncMock) as mock,
+            patch("services.repo_discovery.is_discovery_configured", return_value=True),
+        ):
+            mock.side_effect = [
+                {"status": "error", "repos": [], "detail": "Discovery failed: boom", "configured": True},
+                {"status": "error", "repos": [], "detail": "Discovery failed: boom2", "configured": True},
+            ]
+            resp = _client.get("/api/repos", cookies=_admin_cookie())
+
+        data = resp.json()
+        assert data["status"] == "error"
+        assert "boom" in data["detail"]
+
+
+class TestDiscoveryDismiss:
+    def test_dismiss_sets_configured_flag(self) -> None:
+        with patch("ui.app.write_env") as mock_write:
+            resp = _client.post("/api/discovery/dismiss", cookies=_admin_cookie())
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        mock_write.assert_called_once_with({"discovery_configured": "true"})
+
+    def test_dismiss_requires_admin(self) -> None:
+        resp = _client.post("/api/discovery/dismiss", cookies=_viewer_cookie())
+        assert resp.status_code == 403

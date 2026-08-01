@@ -82,6 +82,42 @@ endblock %} {% block content %}
             </select>
             <span id="repo-dot" class="status-dot bg-slate-400"></span>
         </div>
+        <p
+            id="repo-discovery-status"
+            class="text-xs ci-text-dim mt-2 hidden"
+            aria-live="polite"
+        ></p>
+    </div>
+
+    <!-- First-run discovery popup -->
+    <div
+        id="discovery-popup"
+        class="fixed inset-0 z-50 hidden items-center justify-center bg-black/60"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="discovery-popup-title"
+    >
+        <div class="glass-panel max-w-md w-full mx-4 p-6 rounded-xl">
+            <h2 id="discovery-popup-title" class="text-lg font-bold">Set up repo discovery</h2>
+            <p class="text-sm text-slate-400 mt-2">
+                The agent auto-connects to CI repos the way WiFi connects to a
+                network in range. Choose how it discovers repositories to monitor.
+            </p>
+            <div class="mt-6 flex gap-3 justify-end">
+                <button
+                    id="discovery-auto"
+                    class="px-4 py-2 rounded-lg ci-bg-input ci-border text-sm ci-text-muted hover:ci-border-dim"
+                    type="button"
+                >
+                    Use auto-discovery
+                </button>
+                <a
+                    href="/config"
+                    class="px-4 py-2 rounded-lg bg-indigo-500/10 text-indigo-400 text-sm font-medium hover:bg-indigo-500/20"
+                    >Configure now</a
+                >
+            </div>
+        </div>
     </div>
 
     <!-- Metric Overview Cards -->
@@ -350,6 +386,7 @@ endblock %} {% block content %}
                 }
                 if (typeof fetchWebhookHealth === "function")
                     fetchWebhookHealth();
+                loadRepos({ silent: true });
             });
             es.addEventListener("error", function () {
                 if (sseStatus) {
@@ -361,45 +398,94 @@ endblock %} {% block content %}
             es.addEventListener("metrics_update", handleMetricsUpdate);
         });
 
-        function setRepoError(msg) {
-            var label = document.querySelector('label[for="repo-select"]');
-            if (label) {
-                label.textContent = "Repository: ";
-                var err = document.createElement("span");
-                err.className = "text-xs font-mono text-rose-400 ml-2";
-                err.textContent = msg;
-                label.appendChild(err);
+        function setRepoStatus(msg, isError) {
+            var statusEl = document.getElementById("repo-discovery-status");
+            if (!statusEl) return;
+            statusEl.textContent = msg;
+            statusEl.classList.remove("hidden");
+            statusEl.className =
+                "text-xs mt-2 " +
+                (isError ? "text-rose-400 font-mono" : "ci-text-dim");
+        }
+
+        function showDiscoveryPopup() {
+            var popup = document.getElementById("discovery-popup");
+            if (popup) {
+                popup.classList.remove("hidden");
+                popup.classList.add("flex");
             }
         }
 
-        // Populate repo dropdown from API on load
-        fetch("/api/repos")
-            .then(function (r) {
-                return r.json();
-            })
-            .then(function (data) {
-                if (data.error) {
-                    setRepoError("\u26A0\uFE0F " + data.error);
-                    return;
-                }
-                if (!data.repos || data.repos.length === 0) {
-                    setRepoError(
-                        'No repos found for org "' + (data.org || "") + '"',
+        function hideDiscoveryPopup() {
+            var popup = document.getElementById("discovery-popup");
+            if (popup) {
+                popup.classList.add("hidden");
+                popup.classList.remove("flex");
+            }
+        }
+
+        function loadRepos(opts) {
+            opts = opts || {};
+            fetch("/api/repos")
+                .then(function (r) {
+                    return r.json();
+                })
+                .then(function (data) {
+                    if (data.status === "not_configured") {
+                        setRepoStatus(
+                            data.detail || "Repo discovery not configured.",
+                            false,
+                        );
+                        if (!data.configured && !opts.silent) showDiscoveryPopup();
+                        return;
+                    }
+                    if (data.status === "error") {
+                        setRepoStatus("\u26A0\uFE0F " + data.detail, true);
+                        return;
+                    }
+                    // Keep the "All Repositories" placeholder, drop stale options
+                    while (select.options.length > 1) select.remove(1);
+                    data.repos.forEach(function (repo) {
+                        var opt = document.createElement("option");
+                        opt.value = repo.name;
+                        opt.textContent = repo.name;
+                        opt.dataset.dotColor = repo.dot_color || "slate";
+                        select.appendChild(opt);
+                    });
+                    updateDot();
+                    if (!data.repos || data.repos.length === 0) {
+                        setRepoStatus(
+                            "No repos found. Configure discovery in Settings.",
+                            false,
+                        );
+                    } else if (data.detail) {
+                        setRepoStatus(data.detail, false);
+                    }
+                    if (!data.configured && !opts.silent) showDiscoveryPopup();
+                })
+                .catch(function () {
+                    setRepoStatus(
+                        "Failed to load repos \u2014 network error.",
+                        true,
                     );
-                    return;
-                }
-                data.repos.forEach(function (repo) {
-                    var opt = document.createElement("option");
-                    opt.value = repo.name;
-                    opt.textContent = repo.name;
-                    opt.dataset.dotColor = repo.dot_color || "slate";
-                    select.appendChild(opt);
                 });
-                updateDot();
-            })
-            .catch(function () {
-                setRepoError("Failed to load repos \u2014 network error");
+        }
+
+        // First-run popup: "Use auto-discovery" marks it configured and rescans
+        var discoveryAutoBtn = document.getElementById("discovery-auto");
+        if (discoveryAutoBtn) {
+            discoveryAutoBtn.addEventListener("click", function () {
+                fetch("/api/discovery/dismiss", { method: "POST" }).finally(
+                    function () {
+                        hideDiscoveryPopup();
+                        loadRepos({ silent: true });
+                    },
+                );
             });
+        }
+
+        // Populate repo dropdown from API on load
+        loadRepos();
 
         // ------------------------------------------------------------------
         // SSE: native EventSource — handles ci_update + metrics_update
@@ -412,6 +498,7 @@ endblock %} {% block content %}
                 sseStatus.className = "text-xs font-mono text-emerald-400";
             }
             if (typeof fetchWebhookHealth === "function") fetchWebhookHealth();
+            loadRepos({ silent: true });
         });
 
         es.addEventListener("error", function () {

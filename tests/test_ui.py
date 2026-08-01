@@ -74,6 +74,11 @@ class TestDashboardPage:
         assert "stat-succeeded-runs" in resp.text
         assert "stat-failed-runs" in resp.text
 
+    def test_contains_repo_empty_state(self) -> None:
+        resp = _client.get("/", cookies=_admin_cookie())
+        assert "repo-empty-state" in resp.text
+        assert "/config" in resp.text
+
     def test_unauthenticated_redirects(self) -> None:
         resp = _client.get("/", follow_redirects=False)
         assert resp.status_code == 302
@@ -274,6 +279,9 @@ class TestConnectionTestEndpoints:
         mock_settings.github_token = ""
         resp = _client.post("/api/test/github", cookies=_admin_cookie())
         assert resp.status_code == 400
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["detail"] == "GitHub token not configured"
 
     @patch("ui.app.settings")
     def test_forgejo_not_configured(self, mock_settings: object) -> None:
@@ -281,6 +289,9 @@ class TestConnectionTestEndpoints:
         mock_settings.forgejo_base_url = "https://forgejo.example.com"
         resp = _client.post("/api/test/forgejo", cookies=_admin_cookie())
         assert resp.status_code == 400
+        data = resp.json()
+        assert data["ok"] is False
+        assert "token or base URL" in data["detail"]
 
     @patch("asyncio.create_subprocess_exec", new_callable=AsyncMock)
     def test_mcp_binary_not_found(self, mock_exec: object) -> None:
@@ -414,3 +425,83 @@ class TestDiscoveryDismiss:
     def test_dismiss_requires_admin(self) -> None:
         resp = _client.post("/api/discovery/dismiss", cookies=_viewer_cookie())
         assert resp.status_code == 403
+
+
+class TestWebhookHealthEndpoint:
+    @pytest.fixture
+    def _isolated_runs_db(self, tmp_path):
+        import services.run_tracker as rt
+
+        original = rt._DB_PATH
+        rt._DB_PATH = tmp_path / "ci_runs.db"
+        yield
+        rt._DB_PATH = original
+
+    def test_requires_auth(self) -> None:
+        resp = _client.get("/api/webhook-health", follow_redirects=False)
+        assert resp.status_code == 302
+
+    @pytest.mark.asyncio
+    async def test_empty_when_nothing_configured(self, _isolated_runs_db) -> None:
+        from services.run_tracker import run_tracker
+
+        await run_tracker.clear()
+
+        with patch("services.repo_discovery.discover_repos", new_callable=AsyncMock) as mock:
+            mock.side_effect = [
+                {
+                    "status": "not_configured",
+                    "repos": [],
+                    "detail": "No Forgejo token configured.",
+                    "configured": False,
+                },
+                {"status": "not_configured", "repos": [], "detail": "No GitHub token configured.", "configured": False},
+            ]
+            resp = _client.get("/api/webhook-health", cookies=_admin_cookie())
+
+        assert resp.status_code == 200
+        assert resp.json() == {}
+
+    @pytest.mark.asyncio
+    async def test_discovered_only_repos_are_stale(self, _isolated_runs_db) -> None:
+        from services.run_tracker import run_tracker
+
+        await run_tracker.clear()
+        await run_tracker.record("owner/active", "1", status="PASSED", platform="forgejo")
+
+        with patch("services.repo_discovery.discover_repos", new_callable=AsyncMock) as mock:
+            mock.side_effect = [
+                {
+                    "status": "ok",
+                    "repos": ["owner/silent", "owner/active"],
+                    "detail": "Discovered 2 repos.",
+                    "configured": True,
+                },
+                {"status": "not_configured", "repos": [], "detail": "No GitHub token configured.", "configured": True},
+            ]
+            resp = _client.get("/api/webhook-health", cookies=_admin_cookie())
+
+        data = resp.json()
+        assert data == {
+            "owner/silent": {"status": "stale"},
+            "owner/active": {"status": "healthy"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_merges_both_platforms(self, _isolated_runs_db) -> None:
+        from services.run_tracker import run_tracker
+
+        await run_tracker.clear()
+
+        with patch("services.repo_discovery.discover_repos", new_callable=AsyncMock) as mock:
+            mock.side_effect = [
+                {"status": "ok", "repos": ["fj/one"], "detail": "Discovered 1 repo.", "configured": True},
+                {"status": "ok", "repos": ["gh/two"], "detail": "Discovered 1 repo.", "configured": True},
+            ]
+            resp = _client.get("/api/webhook-health", cookies=_admin_cookie())
+
+        data = resp.json()
+        assert data == {
+            "fj/one": {"status": "stale"},
+            "gh/two": {"status": "stale"},
+        }

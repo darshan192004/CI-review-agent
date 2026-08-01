@@ -26,19 +26,17 @@ document.addEventListener("DOMContentLoaded", function () {
       if (xhr.status === 200) {
         showToast("Settings saved successfully!", "success");
       } else {
-        showToast("Failed to save settings.", "error");
+        showToast(extractErrorDetail(xhr, "Failed to save settings."), "error");
       }
     }
   });
 
   document.body.addEventListener("htmx:responseError", function (evt) {
     const xhr = evt.detail.xhr;
-    let msg = "Request failed (" + xhr.status + ")";
-    try {
-      const res = JSON.parse(xhr.responseText);
-      if (res.detail) msg = res.detail;
-    } catch (e) {}
-    showToast(msg, "error");
+    showToast(
+      extractErrorDetail(xhr, "Request failed (" + xhr.status + ")"),
+      "error"
+    );
   });
 
   // Handle test button responses (forgejo, github, ollama, mcp, messaging)
@@ -60,17 +58,23 @@ document.addEventListener("DOMContentLoaded", function () {
         }
       } catch (e) {
         if (xhr.status >= 400) {
-          let msg = "Test failed (" + xhr.status + ")";
-          try {
-            const res = JSON.parse(xhr.responseText);
-            if (res.detail) msg = res.detail;
-          } catch (e2) {}
-          showToast(msg, "error");
+          showToast(
+            extractErrorDetail(xhr, "Test failed (" + xhr.status + ")"),
+            "error"
+          );
         }
       }
     }
   });
 });
+
+function extractErrorDetail(xhr, fallback) {
+  try {
+    const res = JSON.parse(xhr.responseText);
+    if (res && res.detail) return res.detail;
+  } catch (e) {}
+  return fallback;
+}
 
 function toggleSecret(inputId, btn) {
   const input = document.getElementById(inputId);
@@ -125,7 +129,10 @@ function fetchWebhookHealth() {
   if (!el) return;
 
   fetch("/api/webhook-health")
-    .then(r => r.json())
+    .then(r => {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    })
     .then(data => {
       const repos = Object.keys(data);
       if (repos.length === 0) {
@@ -141,5 +148,8 @@ function fetchWebhookHealth() {
         el.className = "text-xs font-mono text-emerald-400";
       }
     })
-    .catch(() => {});
+    .catch(() => {
+      el.textContent = "Webhooks: unavailable";
+      el.className = "text-xs font-mono text-amber-400";
+    });
 }

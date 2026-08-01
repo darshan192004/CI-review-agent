@@ -87,6 +87,18 @@ endblock %} {% block content %}
             class="text-xs ci-text-dim mt-2 hidden"
             aria-live="polite"
         ></p>
+        <div id="repo-empty-state" class="hidden mt-3 p-4 rounded-lg ci-bg-input ci-border">
+            <p class="text-sm font-medium ci-text-main">No repositories are being monitored</p>
+            <p class="text-xs ci-text-muted mt-1">
+                Add a CI token and choose a discovery scope so the agent can
+                watch your builds.
+            </p>
+            <a
+                href="/config"
+                class="mt-3 inline-block px-4 py-2 rounded-lg bg-indigo-500/10 text-indigo-400 text-sm font-medium hover:bg-indigo-500/20"
+                >Configure repo discovery</a
+            >
+        </div>
     </div>
 
     <!-- First-run discovery popup -->
@@ -401,11 +413,21 @@ endblock %} {% block content %}
         function setRepoStatus(msg, isError) {
             var statusEl = document.getElementById("repo-discovery-status");
             if (!statusEl) return;
+            if (!msg) {
+                statusEl.classList.add("hidden");
+                return;
+            }
             statusEl.textContent = msg;
             statusEl.classList.remove("hidden");
             statusEl.className =
                 "text-xs mt-2 " +
                 (isError ? "text-rose-400 font-mono" : "ci-text-dim");
+        }
+
+        function showEmptyState(show) {
+            var el = document.getElementById("repo-empty-state");
+            if (!el) return;
+            el.classList.toggle("hidden", !show);
         }
 
         function showDiscoveryPopup() {
@@ -431,21 +453,26 @@ endblock %} {% block content %}
                     return r.json();
                 })
                 .then(function (data) {
+                    var repos = data.repos || [];
+                    var hasRepos = repos.length > 0;
                     if (data.status === "not_configured") {
                         setRepoStatus(
                             data.detail || "Repo discovery not configured.",
                             false,
                         );
+                        showEmptyState(true);
                         if (!data.configured && !opts.silent) showDiscoveryPopup();
                         return;
                     }
                     if (data.status === "error") {
-                        setRepoStatus("\u26A0\uFE0F " + data.detail, true);
+                        setRepoStatus(data.detail, true);
+                        showEmptyState(true);
                         return;
                     }
+                    showEmptyState(!hasRepos);
                     // Keep the "All Repositories" placeholder, drop stale options
                     while (select.options.length > 1) select.remove(1);
-                    data.repos.forEach(function (repo) {
+                    repos.forEach(function (repo) {
                         var opt = document.createElement("option");
                         opt.value = repo.name;
                         opt.textContent = repo.name;
@@ -453,13 +480,10 @@ endblock %} {% block content %}
                         select.appendChild(opt);
                     });
                     updateDot();
-                    if (!data.repos || data.repos.length === 0) {
-                        setRepoStatus(
-                            "No repos found. Configure discovery in Settings.",
-                            false,
-                        );
-                    } else if (data.detail) {
+                    if (hasRepos && data.detail) {
                         setRepoStatus(data.detail, false);
+                    } else {
+                        setRepoStatus("", false);
                     }
                     if (!data.configured && !opts.silent) showDiscoveryPopup();
                 })
@@ -468,6 +492,7 @@ endblock %} {% block content %}
                         "Failed to load repos \u2014 network error.",
                         true,
                     );
+                    showEmptyState(true);
                 });
         }
 

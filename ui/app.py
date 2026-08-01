@@ -422,6 +422,34 @@ async def dismiss_discovery(_user: User = Depends(require_admin_role)) -> JSONRe
     return JSONResponse(content={"ok": True})
 
 
+@router.get("/api/webhook-health")
+async def webhook_health(_user: User = Depends(get_current_user)) -> JSONResponse:
+    """Report webhook delivery health for the repos currently being monitored.
+
+    Returns ``{repo: {"status": "healthy" | "stale"}}`` for every repo the
+    CI token can discover. A repo is *healthy* when the agent has recorded CI
+    activity for it locally (runs seeded from delivered webhooks or a history
+    sync) and *stale* when it is discovered but the agent has never seen a
+    run from it — a strong hint its webhook is not configured.
+
+    Returns an empty object when nothing is configured; the dashboard then
+    hides the health line entirely.
+    """
+    from services.repo_discovery import discover_repos, get_known_repos
+
+    seen: set[str] = set(await get_known_repos())
+    health: dict[str, dict[str, str]] = {}
+
+    for platform in ("forgejo", "github"):
+        result = await discover_repos(platform)
+        if result["status"] != "ok":
+            continue
+        for repo in result["repos"]:
+            health[repo] = {"status": "healthy" if repo in seen else "stale"}
+
+    return JSONResponse(content=health)
+
+
 # ---------------------------------------------------------------------------
 # History Seed API
 # ---------------------------------------------------------------------------
@@ -656,7 +684,7 @@ async def test_github(_user: User = Depends(require_admin_role)) -> JSONResponse
     import httpx
 
     if not settings.github_token:
-        raise HTTPException(status_code=400, detail="GitHub token not configured")
+        return JSONResponse(status_code=400, content={"ok": False, "detail": "GitHub token not configured"})
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
@@ -680,7 +708,10 @@ async def test_forgejo(_user: User = Depends(require_admin_role)) -> JSONRespons
     token = settings.forgejo_token
     base = settings.forgejo_base_url.rstrip("/")
     if not token or "example.com" in base:
-        raise HTTPException(status_code=400, detail="Forgejo token or base URL not configured")
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "detail": "Forgejo token or base URL not configured"},
+        )
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
@@ -740,7 +771,7 @@ async def test_mcp(_user: User = Depends(require_admin_role)) -> JSONResponse:
                         "server": resp["result"].get("serverInfo", {}).get("name", "unknown"),
                     }
                 )
-            return JSONResponse(content={"ok": False, "detail": "Unexpected response"})
+            return JSONResponse(status_code=502, content={"ok": False, "detail": "Unexpected response"})
         except asyncio.TimeoutError:
             proc.terminate()
             return JSONResponse(
@@ -824,7 +855,7 @@ async def test_messaging(_user: User = Depends(require_admin_role)) -> JSONRespo
                     "detail": resp["result"].get("content", [{}])[0].get("text", "MCP error"),
                 },
             )
-        return JSONResponse(content={"ok": False, "detail": "Unexpected response"})
+        return JSONResponse(status_code=502, content={"ok": False, "detail": "Unexpected response"})
     except FileNotFoundError:
         return JSONResponse(
             status_code=502,

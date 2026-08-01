@@ -24,11 +24,14 @@ class CIStatus(StrEnum):
 class FileFix(BaseModel):
     file_path: str = Field(description="Relative path of the file to update.")
     content: str = Field(description="The complete updated file content.")
+    reason: str | None = Field(default=None, description="One-line reason this file changed.")
 
 
 class RepairAnalysis(BaseModel):
     explanation: str = Field(description="Root cause analysis of the CI failure.")
     modified_files: list[FileFix] = Field(description="List of files to overwrite with corrected content.")
+    commit_scope: str | None = Field(default=None, description="Short git commit scope (module/folder).")
+    commit_summary: str | None = Field(default=None, description="Short imperative action for the commit subject.")
 
 
 class LLMAnalysisResponse(BaseModel):

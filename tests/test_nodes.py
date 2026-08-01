@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from nodes import node_llm_fix_code
+from nodes import _parse_repair_analysis, node_llm_fix_code
 
 
 class _FakeLLMResponse:
@@ -88,3 +88,39 @@ class TestNodeLlmFixCodeNoModifications:
 
         assert result["ci_status"] == "CANNOT_FIX"
         assert "boom" in result["explanation"]
+
+
+class TestParseRepairAnalysis:
+    def test_parses_commit_header_fields(self) -> None:
+        raw = (
+            '{"explanation": "Root cause.", "commit_scope": "services", '
+            '"commit_summary": "fix flaky timeout", '
+            '"modified_files": [{"file_path": "services/a.py", "content": "x", "reason": "resolved race"}]}'
+        )
+        result = _parse_repair_analysis(raw)
+        assert result.commit_scope == "services"
+        assert result.commit_summary == "fix flaky timeout"
+        assert result.modified_files[0].reason == "resolved race"
+
+    def test_commit_scope_falls_back_to_file_directory(self) -> None:
+        raw = '{"explanation": "Root cause.", "modified_files": [{"file_path": "services/a.py", "content": "x"}]}'
+        result = _parse_repair_analysis(raw)
+        assert result.commit_scope == "services"
+
+    def test_commit_summary_falls_back_to_explanation(self) -> None:
+        raw = (
+            '{"explanation": "Fix the flaky timeout in the test runner.", '
+            '"modified_files": [{"file_path": "services/a.py", "content": "x"}]}'
+        )
+        result = _parse_repair_analysis(raw)
+        assert result.commit_summary == "fix the flaky timeout in the test runner"
+
+    def test_scope_falls_back_to_ci_without_files(self) -> None:
+        raw = '{"explanation": "Root cause.", "modified_files": []}'
+        result = _parse_repair_analysis(raw)
+        assert result.commit_scope == "ci"
+
+    def test_reason_is_none_when_omitted(self) -> None:
+        raw = '{"explanation": "Root cause.", "modified_files": [{"file_path": "services/a.py", "content": "x"}]}'
+        result = _parse_repair_analysis(raw)
+        assert result.modified_files[0].reason is None

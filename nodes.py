@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from config import settings
 from services.ci_client import CIClient, create_ci_client
+from services.commit_message import build_commit_message, derive_scope, derive_summary
 from services.git_manager import GitError, WorkspaceGitManager
 from services.mcp_client import MCPClient
 from services.rate_limiter import invoke_with_llm_rate_limit
@@ -521,11 +522,25 @@ def _parse_repair_analysis(raw_text: str) -> RepairAnalysis:
         file_path = entry.get("file_path")
         content = entry.get("content")
         if isinstance(file_path, str) and file_path and isinstance(content, str):
-            modified_files.append(FileFix(file_path=file_path, content=content))
+            reason = entry.get("reason")
+            reason = reason if isinstance(reason, str) and reason.strip() else None
+            modified_files.append(FileFix(file_path=file_path, content=content, reason=reason))
+
+    # Commit header fallbacks: LLM provides scope/summary/reason, but we derive
+    # sane values when the model omits them so the message stays well-formed.
+    commit_scope = data.get("commit_scope")
+    if not isinstance(commit_scope, str) or not commit_scope.strip():
+        commit_scope = derive_scope([f.file_path for f in modified_files])
+
+    commit_summary = data.get("commit_summary")
+    if not isinstance(commit_summary, str) or not commit_summary.strip():
+        commit_summary = derive_summary(explanation)
 
     return RepairAnalysis(
         explanation=explanation,
         modified_files=modified_files,
+        commit_scope=commit_scope,
+        commit_summary=commit_summary,
     )
 
 
@@ -585,8 +600,10 @@ async def node_llm_fix_code(state: AgentState) -> dict[str, Any]:
         "analyze the root cause and provide exact file modifications to resolve the issue.\n\n"
         "Return a JSON object with:\n"
         '- "explanation": root cause analysis of the CI failure\n'
-        '- "modified_files": list of objects with "file_path" (relative path) and '
-        '"content" (complete updated file content)\n\n'
+        '- "commit_scope": short git commit scope (module/folder, e.g. "services", "ui")\n'
+        '- "commit_summary": short imperative action (<= 60 chars) for the commit subject\n'
+        '- "modified_files": list of objects with "file_path" (relative path), '
+        '"content" (complete updated file content) and "reason" (one line why this file changed)\n\n'
         "IMPORTANT: Return COMPLETE file contents, not diffs. Only fix the actual issue.\n"
         "IMPORTANT: Respond with ONLY a single valid JSON object — no markdown, no code "
         "fences, no prose before or after.\n"
@@ -602,6 +619,13 @@ async def node_llm_fix_code(state: AgentState) -> dict[str, Any]:
         "- NEVER modify .gitignore or any git-related config files\n"
         "- Only modify application source code files (.py, .js, .ts, .java, .go, .rs, etc.)\n"
         "- Keep changes minimal and focused on the root cause of the CI failure\n\n"
+        "COMMIT HEADER RULE:\n"
+        '- "commit_scope" must be the top-level module/folder of the changed files '
+        '(e.g. "services" for services/*.py).\n'
+        '- "commit_summary" must be a short imperative action (<= 60 chars) that '
+        'describes the fix, e.g. "fix flaky timeout in the test runner".\n'
+        '- Every entry in "modified_files" must include a one-line "reason" '
+        "explaining why that file changed.\n\n"
         "INFRASTRUCTURE ERROR DETECTION:\n"
         "- If the CI log indicates an infrastructure issue (authentication failure, "
         "credential error, git clone failure, permission denied, missing token, "
@@ -712,7 +736,15 @@ Analyze the failure and provide a fix as JSON."""
                 "yes" if clone_url else "no",
             )
             if file_changes and git_ws.apply_file_changes(file_changes):
-                commit_msg = f"fix(ci): auto-repair attempt {attempt}\n\n{response.explanation}"
+                commit_msg = build_commit_message(
+                    summary=response.commit_summary or derive_summary(response.explanation),
+                    scope=response.commit_scope,
+                    explanation=response.explanation,
+                    file_reasons=[(f.file_path, f.reason or "") for f in response.modified_files],
+                    repo=state.get("repository", ""),
+                    run_id=state.get("run_id", ""),
+                    attempt=attempt,
+                )
                 success = git_ws.commit_and_push(commit_msg)
                 logger.info("Push result: success=%s, new_run_id=%s", success, new_run_id)
 

@@ -27,6 +27,7 @@ from services.webhook_verify import (
     verify_github_signature,
 )
 from ui.app import router as ui_router
+from ui.badges import status_badge
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +198,7 @@ async def sse_endpoint(request: Request, repo: str = Query("")) -> StreamingResp
                 f'<td class="font-mono text-xs text-indigo-400">{e(meta.get("repository", ""))}</td>'
                 f'<td class="font-mono text-xs text-slate-400">#{e(meta.get("run_id", ""))}</td>'
                 f'<td class="font-mono text-xs text-slate-400">#{e(meta.get("run_attempt", "1"))}</td>'
-                f"<td>{_sse_status_badge(event_data['status'])}</td>"
+                f"<td>{status_badge(event_data['status'])}</td>"
                 f'<td class="text-xs text-slate-400 uppercase font-mono">{e(meta.get("platform", ""))}</td>'
                 f'<td class="text-xs text-slate-400">{e(meta.get("branch", ""))}</td>'
                 f'<td class="text-xs text-slate-400 font-mono">{e((meta.get("commit_sha", "") or "")[:8])}</td>'
@@ -210,27 +211,6 @@ async def sse_endpoint(request: Request, repo: str = Query("")) -> StreamingResp
             yield await _metrics_snapshot(filter_repo=repo)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-
-def _sse_status_badge(status: str) -> str:
-    dot_pulse = '<span class="status-dot status-dot-pulse bg-blue-400"></span>'
-    dot_green = '<span class="status-dot bg-emerald-400"></span>'
-    dot_red = '<span class="status-dot bg-rose-400"></span>'
-    dot_amber = '<span class="status-dot bg-amber-400"></span>'
-
-    if status == "AGENT_WORKING":
-        return f'<span class="badge badge-blue">{dot_pulse}Agent Working</span>'
-    if status == "RUNNING":
-        return f'<span class="badge badge-blue">{dot_pulse}Running</span>'
-    if status in ("PASSED", "success"):
-        return f'<span class="badge badge-green">{dot_green}Passed</span>'
-    if status in ("FAILED", "failed"):
-        return f'<span class="badge badge-red">{dot_red}Failed</span>'
-    if status == "EXHAUSTED":
-        return f'<span class="badge badge-orange">{dot_amber}Exhausted</span>'
-    if status == "error":
-        return f'<span class="badge badge-orange">{dot_amber}Error</span>'
-    return f'<span class="badge badge-purple">{html_mod.escape(status)}</span>'
 
 
 @app.post("/webhook/forgejo")

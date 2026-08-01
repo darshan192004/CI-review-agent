@@ -22,6 +22,7 @@ from services.auth import (
 )
 from services.env_writer import read_env_redacted, write_env
 from services.run_tracker import run_tracker
+from ui.badges import status_badge
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ _UI_DIR = Path(__file__).resolve().parent
 router = APIRouter()
 
 templates = Jinja2Templates(directory=str(_UI_DIR / "templates"))
+templates.env.globals["status_badge"] = status_badge
 
 
 # ---------------------------------------------------------------------------
@@ -50,9 +52,7 @@ async def login_submit(request: Request) -> HTMLResponse:
 
     user = authenticate_user(username, password)
     if user is None:
-        return templates.TemplateResponse(
-            request, "login.html", {"error": "Invalid credentials"}
-        )
+        return templates.TemplateResponse(request, "login.html", {"error": "Invalid credentials"})
 
     token = create_session(user)
     response = RedirectResponse(url="/", status_code=302)
@@ -75,20 +75,6 @@ async def logout(request: Request) -> RedirectResponse:
     response = RedirectResponse(url="/login", status_code=302)
     response.delete_cookie(key=_COOKIE_NAME)
     return response
-
-
-def _status_badge(status: str) -> str:
-    if status == "AGENT_WORKING":
-        return '<span class="badge badge-blue"><span class="status-dot status-dot-pulse bg-blue-400"></span>Agent Working</span>'
-    if status == "processing":
-        return '<span class="badge badge-blue"><span class="status-dot status-dot-pulse bg-blue-400"></span>Processing</span>'
-    if status in ("PASSED", "success"):
-        return '<span class="badge badge-green"><span class="status-dot bg-emerald-400"></span>Passed</span>'
-    if status in ("FAILED", "failed"):
-        return '<span class="badge badge-red"><span class="status-dot bg-rose-400"></span>Failed</span>'
-    if status == "error":
-        return '<span class="badge badge-orange"><span class="status-dot bg-amber-400"></span>Error</span>'
-    return f'<span class="badge badge-purple">{html_mod.escape(status)}</span>'
 
 
 def _format_uptime(seconds: float) -> str:
@@ -168,9 +154,7 @@ async def dashboard(request: Request, _user: User = Depends(get_current_user)) -
             "active_page": "dashboard",
             "active_count": counts.get("processing", 0),
             "success_count": counts.get("PASSED", 0) + counts.get("success", 0),
-            "failed_count": counts.get("FAILED", 0)
-            + counts.get("failed", 0)
-            + counts.get("error", 0),
+            "failed_count": counts.get("FAILED", 0) + counts.get("failed", 0) + counts.get("error", 0),
             "uptime": uptime,
             "recent_runs": [
                 {
@@ -236,6 +220,13 @@ async def runs_page(
         for r in all_runs
     ]
 
+    if request.headers.get("HX-Request") == "true":
+        return templates.TemplateResponse(
+            request,
+            "partials/runs_table.html",
+            {"runs": runs_data},
+        )
+
     return templates.TemplateResponse(
         request,
         "runs.html",
@@ -267,7 +258,7 @@ async def dashboard_partial(
             <td class="font-mono text-xs text-indigo-400">{e(run["repository"])}</td>
             <td class="font-mono text-xs text-slate-400">#{e(run["run_id"])}</td>
             <td class="font-mono text-xs text-slate-400">#{e(run.get("run_attempt", "1"))}</td>
-            <td>{_status_badge(run["status"])}</td>
+            <td>{status_badge(run["status"])}</td>
             <td class="text-xs text-slate-400 uppercase font-mono">{e(run.get("platform", "\u2014"))}</td>
             <td class="text-xs text-slate-400">{e(run.get("branch", "\u2014"))}</td>
             <td class="text-xs text-slate-400 font-mono">{commit_short}</td>
@@ -288,8 +279,12 @@ async def dashboard_partial(
         </tr>
       </thead>
       <tbody>
-        {rows if rows else '<tr><td colspan="8" class="p-12 text-center text-slate-400 text-sm">'
-                'No webhook runs recorded yet.</td></tr>'}
+        {
+        rows
+        if rows
+        else '<tr><td colspan="8" class="p-12 text-center text-slate-400 text-sm">'
+        "No webhook runs recorded yet.</td></tr>"
+    }
       </tbody>
     </table>"""
 
@@ -306,7 +301,8 @@ async def metrics_partial(
         recent = await run_tracker.get_all_runs()
         recent = [r for r in recent if r["repository"] == repo]
         active_cnt = sum(
-            1 for r in recent
+            1
+            for r in recent
             if r["status"] in ("processing", "AGENT_WORKING", "RUNNING", "PENDING", "QUEUED", "WAITING")
         )
         success_cnt = sum(1 for r in recent if r["status"] in ("PASSED", "success"))
@@ -426,11 +422,11 @@ async def seed_run_history(
     e = html_mod.escape
     for run in recent:
         commit_short = e(run.get("commit_sha", "")[:8]) if run.get("commit_sha") else "\u2014"
-        rows += f"""<tr id="run-{e(run['repository'])}:{e(run['run_id'])}:{e(run.get('run_attempt', '1'))}">
+        rows += f"""<tr id="run-{e(run["repository"])}:{e(run["run_id"])}:{e(run.get("run_attempt", "1"))}">
             <td class="font-mono text-xs text-indigo-400">{e(run["repository"])}</td>
             <td class="font-mono text-xs text-slate-400">#{e(run["run_id"])}</td>
             <td class="font-mono text-xs text-slate-400">#{e(run.get("run_attempt", "1"))}</td>
-            <td>{_status_badge(run["status"])}</td>
+            <td>{status_badge(run["status"])}</td>
             <td class="text-xs text-slate-400 uppercase font-mono">{e(run.get("platform", "\u2014"))}</td>
             <td class="text-xs text-slate-400">{e(run.get("branch", "\u2014"))}</td>
             <td class="text-xs text-slate-400 font-mono">{commit_short}</td>
@@ -451,8 +447,11 @@ async def seed_run_history(
         </tr>
       </thead>
       <tbody>
-        {rows if rows else '<tr><td colspan="8" class="p-12 text-center text-slate-400 text-sm">'
-                'No CI history found.</td></tr>'}
+        {
+        rows
+        if rows
+        else '<tr><td colspan="8" class="p-12 text-center text-slate-400 text-sm">No CI history found.</td></tr>'
+    }
       </tbody>
     </table>"""
 
@@ -524,11 +523,7 @@ async def update_settings(request: Request, _user: User = Depends(require_admin_
     }
 
     # Filter out redacted values ("••••••••") so we don't overwrite real secrets
-    updates = {
-        k: str(v).strip()
-        for k, v in body.items()
-        if k in allowed_keys and str(v).strip() != "••••••••"
-    }
+    updates = {k: str(v).strip() for k, v in body.items() if k in allowed_keys and str(v).strip() != "••••••••"}
 
     if updates:
         write_env(updates)
@@ -553,6 +548,7 @@ async def trigger_test_run(
     from server import broadcast_event
 
     import random
+
     run_id = str(random.randint(1000, 9999))
     if not repo:
         repo = "owner/ci-test-repo"
@@ -562,17 +558,34 @@ async def trigger_test_run(
     broadcast_event(
         task_key=task_key,
         status="processing",
-        meta={"repository": repo, "run_id": run_id, "run_attempt": attempt, "platform": "", "branch": "", "commit_sha": "", "author": ""},
+        meta={
+            "repository": repo,
+            "run_id": run_id,
+            "run_attempt": attempt,
+            "platform": "",
+            "branch": "",
+            "commit_sha": "",
+            "author": "",
+        },
     )
 
     import asyncio
+
     async def _complete():
         await asyncio.sleep(2)
         await run_tracker.update_status(repository=repo, run_id=run_id, status="PASSED")
         broadcast_event(
             task_key=task_key,
             status="PASSED",
-            meta={"repository": repo, "run_id": run_id, "run_attempt": attempt, "platform": "", "branch": "", "commit_sha": "", "author": ""},
+            meta={
+                "repository": repo,
+                "run_id": run_id,
+                "run_attempt": attempt,
+                "platform": "",
+                "branch": "",
+                "commit_sha": "",
+                "author": "",
+            },
         )
 
     asyncio.create_task(_complete())
@@ -601,8 +614,6 @@ async def test_ollama(_user: User = Depends(require_admin_role)) -> JSONResponse
         return JSONResponse(status_code=502, content={"ok": False, "detail": str(e)})
 
 
-
-
 # ---------------------------------------------------------------------------
 # Connection Test Endpoints
 # ---------------------------------------------------------------------------
@@ -621,9 +632,7 @@ async def test_github(_user: User = Depends(require_admin_role)) -> JSONResponse
                 headers={"Authorization": f"Bearer {settings.github_token}"},
             )
             if resp.status_code == 200:
-                return JSONResponse(
-                    content={"ok": True, "user": resp.json().get("login", "unknown")}
-                )
+                return JSONResponse(content={"ok": True, "user": resp.json().get("login", "unknown")})
             return JSONResponse(
                 status_code=400,
                 content={"ok": False, "detail": f"HTTP {resp.status_code}"},
@@ -639,9 +648,7 @@ async def test_forgejo(_user: User = Depends(require_admin_role)) -> JSONRespons
     token = settings.forgejo_token
     base = settings.forgejo_base_url.rstrip("/")
     if not token or "example.com" in base:
-        raise HTTPException(
-            status_code=400, detail="Forgejo token or base URL not configured"
-        )
+        raise HTTPException(status_code=400, detail="Forgejo token or base URL not configured")
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
@@ -649,9 +656,7 @@ async def test_forgejo(_user: User = Depends(require_admin_role)) -> JSONRespons
                 headers={"Authorization": f"Bearer {token}"},
             )
             if resp.status_code == 200:
-                return JSONResponse(
-                    content={"ok": True, "user": resp.json().get("login", "unknown")}
-                )
+                return JSONResponse(content={"ok": True, "user": resp.json().get("login", "unknown")})
             return JSONResponse(
                 status_code=400,
                 content={"ok": False, "detail": f"HTTP {resp.status_code}"},
@@ -700,9 +705,7 @@ async def test_mcp(_user: User = Depends(require_admin_role)) -> JSONResponse:
                 return JSONResponse(
                     content={
                         "ok": True,
-                        "server": resp["result"]
-                        .get("serverInfo", {})
-                        .get("name", "unknown"),
+                        "server": resp["result"].get("serverInfo", {}).get("name", "unknown"),
                     }
                 )
             return JSONResponse(content={"ok": False, "detail": "Unexpected response"})
@@ -781,16 +784,12 @@ async def test_messaging(_user: User = Depends(require_admin_role)) -> JSONRespo
         resp = json.loads(line.decode())
         if "result" in resp:
             if not resp["result"].get("isError", False):
-                return JSONResponse(
-                    content={"ok": True, "detail": "Test notification sent"}
-                )
+                return JSONResponse(content={"ok": True, "detail": "Test notification sent"})
             return JSONResponse(
                 status_code=400,
                 content={
                     "ok": False,
-                    "detail": resp["result"]
-                    .get("content", [{}])[0]
-                    .get("text", "MCP error"),
+                    "detail": resp["result"].get("content", [{}])[0].get("text", "MCP error"),
                 },
             )
         return JSONResponse(content={"ok": False, "detail": "Unexpected response"})

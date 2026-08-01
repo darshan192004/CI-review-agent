@@ -4,6 +4,8 @@ import json
 import os
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from config import settings
@@ -36,10 +38,10 @@ class TestLoginPage:
         assert "Invalid credentials" in resp.text
 
     def test_login_sets_cookie(self) -> None:
-        with patch.object(settings, "admin_username", "admin"), \
-             patch.object(settings, "admin_password", "secret123"):
+        with patch.object(settings, "admin_username", "admin"), patch.object(settings, "admin_password", "secret123"):
             resp = _client.post(
-                "/login", data={"username": "admin", "password": "secret123"},
+                "/login",
+                data={"username": "admin", "password": "secret123"},
                 follow_redirects=False,
             )
             assert resp.status_code == 302
@@ -111,6 +113,74 @@ class TestRunsPage:
     def test_filter_by_platform(self) -> None:
         resp = _client.get("/runs?platform=github", cookies=_admin_cookie())
         assert resp.status_code == 200
+
+
+class TestRunsPageHxFragment:
+    @pytest.fixture
+    def _isolated_runs_db(self, tmp_path):
+        import services.run_tracker as rt
+
+        original = rt._DB_PATH
+        rt._DB_PATH = tmp_path / "ci_runs.db"
+        yield
+        rt._DB_PATH = original
+
+    @pytest.mark.asyncio
+    async def test_hx_request_returns_fragment_not_full_page(self, _isolated_runs_db) -> None:
+        from services.run_tracker import run_tracker
+
+        await run_tracker.record("owner/alpha", "1", status="PASSED", platform="github")
+
+        resp = _client.get("/runs", headers={"HX-Request": "true"}, cookies=_admin_cookie())
+        assert resp.status_code == 200
+        assert "<!DOCTYPE html>" not in resp.text
+        assert "<nav" not in resp.text
+        assert 'id="runs-table-body"' in resp.text
+
+    @pytest.mark.asyncio
+    async def test_non_hx_request_returns_full_page(self, _isolated_runs_db) -> None:
+        from services.run_tracker import run_tracker
+
+        await run_tracker.record("owner/alpha", "1", status="PASSED", platform="github")
+
+        resp = _client.get("/runs", cookies=_admin_cookie())
+        assert resp.status_code == 200
+        assert "<!DOCTYPE html>" in resp.text
+        assert "<nav" in resp.text
+
+    @pytest.mark.asyncio
+    async def test_hx_request_filters_by_status(self, _isolated_runs_db) -> None:
+        from services.run_tracker import run_tracker
+
+        await run_tracker.record("owner/alpha", "1", status="PASSED", platform="github")
+        await run_tracker.record("owner/beta", "2", status="FAILED", platform="forgejo")
+
+        resp = _client.get(
+            "/runs?status=PASSED",
+            headers={"HX-Request": "true"},
+            cookies=_admin_cookie(),
+        )
+        assert resp.status_code == 200
+        assert "<!DOCTYPE html>" not in resp.text
+        assert "owner/alpha" in resp.text
+        assert "owner/beta" not in resp.text
+
+    @pytest.mark.asyncio
+    async def test_hx_request_filters_by_platform(self, _isolated_runs_db) -> None:
+        from services.run_tracker import run_tracker
+
+        await run_tracker.record("owner/alpha", "1", status="PASSED", platform="github")
+        await run_tracker.record("owner/beta", "2", status="FAILED", platform="forgejo")
+
+        resp = _client.get(
+            "/runs?platform=forgejo",
+            headers={"HX-Request": "true"},
+            cookies=_admin_cookie(),
+        )
+        assert resp.status_code == 200
+        assert "<!DOCTYPE html>" not in resp.text
+        assert "owner/beta" in resp.text
+        assert "owner/alpha" not in resp.text
 
 
 class TestSettingsAPI:

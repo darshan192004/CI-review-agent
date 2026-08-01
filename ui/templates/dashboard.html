@@ -268,40 +268,7 @@ endblock %} {% block content %}
                             #{{ run.run_attempt | default('1') }}
                         </td>
                         <td>
-                            {% if run.status == 'AGENT_WORKING' %}
-                            <span class="badge badge-blue"
-                                ><span
-                                    class="status-dot status-dot-pulse bg-blue-400"
-                                ></span
-                                >Agent Working</span
-                            >
-                            {% elif run.status == 'processing' %}
-                            <span class="badge badge-blue"
-                                ><span
-                                    class="status-dot status-dot-pulse bg-blue-400"
-                                ></span
-                                >Processing</span
-                            >
-                            {% elif run.status in ('PASSED', 'success') %}
-                            <span class="badge badge-green"
-                                ><span class="status-dot bg-emerald-400"></span
-                                >Passed</span
-                            >
-                            {% elif run.status in ('FAILED', 'failed') %}
-                            <span class="badge badge-red"
-                                ><span class="status-dot bg-rose-400"></span
-                                >Failed</span
-                            >
-                            {% elif run.status == 'EXHAUSTED' %}
-                            <span class="badge badge-orange"
-                                ><span class="status-dot bg-amber-400"></span
-                                >Exhausted</span
-                            >
-                            {% else %}
-                            <span class="badge badge-orange"
-                                >{{ run.status }}</span
-                            >
-                            {% endif %}
+                            {{ status_badge(run.status) }}
                         </td>
                         <td class="text-xs ci-text-muted uppercase font-mono">
                             {{ run.platform | default('—') }}

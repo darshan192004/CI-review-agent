@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     auto_create_pull_request: str = "true"  # "true" or "false"
     auto_fix_reruns: str = "true"  # "true" or "false" — trigger agent auto-fix on rerun webhooks
 
+    # How long the Run History page retains completed runs (hours). Rows older
+    # than this are evicted on each access. 168 = 7 days.
+    run_history_ttl_hours: int = 168
+
     # Webhook secrets (for signature verification)
     forgejo_webhook_secret: str = ""
     github_webhook_secret: str = ""

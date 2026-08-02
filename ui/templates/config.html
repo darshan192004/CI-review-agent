@@ -240,6 +240,17 @@
           </div>
 
           <div>
+            <label class="block text-xs font-semibold ci-text-main uppercase tracking-wider mb-1.5">Run History Retention</label>
+            <select name="run_history_ttl_hours" class="select-field">
+              <option value="24" {% if settings.run_history_ttl_hours == 24 %}selected{% endif %}>24 Hours</option>
+              <option value="168" {% if settings.run_history_ttl_hours == 168 %}selected{% endif %}>7 Days (Recommended)</option>
+              <option value="720" {% if settings.run_history_ttl_hours == 720 %}selected{% endif %}>30 Days</option>
+              <option value="8760" {% if settings.run_history_ttl_hours == 8760 %}selected{% endif %}>1 Year</option>
+            </select>
+            <p class="text-[10px] ci-text-dim mt-1">How long completed runs stay on the Run History page. Takes effect after a server restart.</p>
+          </div>
+
+          <div>
             <label class="block text-xs font-semibold ci-text-main uppercase tracking-wider mb-1.5">Auto-Fix on Rerun Webhooks</label>
             <select name="auto_fix_reruns" class="select-field">
               <option value="true" {% if settings.auto_fix_reruns == 'true' %}selected{% endif %}>Enabled (Trigger agent on rerun webhooks)</option>

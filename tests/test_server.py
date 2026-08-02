@@ -205,6 +205,28 @@ class TestFormatUptimeHms:
         assert _format_uptime_hms(-5) == "0h 0m 0s"
 
 
+class TestMissingLlmCredential:
+    def test_openai_without_key(self, monkeypatch) -> None:
+        from server import _missing_llm_credential
+
+        monkeypatch.setattr(settings, "llm_provider", "openai")
+        monkeypatch.setattr(settings, "openai_api_key", "")
+        assert _missing_llm_credential() == ("openai", "OPENAI_API_KEY")
+
+    def test_openai_with_key(self, monkeypatch) -> None:
+        from server import _missing_llm_credential
+
+        monkeypatch.setattr(settings, "llm_provider", "openai")
+        monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+        assert _missing_llm_credential() is None
+
+    def test_ollama_never_requires_key(self, monkeypatch) -> None:
+        from server import _missing_llm_credential
+
+        monkeypatch.setattr(settings, "llm_provider", "ollama")
+        assert _missing_llm_credential() is None
+
+
 class TestResolveStoredRun:
     @pytest.mark.asyncio
     async def test_prefers_get_run_by_session(self, monkeypatch) -> None:

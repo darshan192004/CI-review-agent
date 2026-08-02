@@ -98,12 +98,44 @@ async def _resolve_stored_run(meta: dict[str, Any]) -> dict[str, Any] | None:
     )
 
 
+def _missing_llm_credential() -> tuple[str, str] | None:
+    """Return (provider, human label) when the active LLM provider lacks its key."""
+    provider = (settings.llm_provider or "").strip().lower()
+    required_key = {
+        "openai": "openai_api_key",
+        "anthropic": "anthropic_api_key",
+        "bedrock": "bedrock_aws_access_key_id",
+        "azure_openai": "azure_openai_api_key",
+        "gemini": "gemini_api_key",
+        "mistral": "mistral_api_key",
+        "cohere": "cohere_api_key",
+        "groq": "groq_api_key",
+        "together": "together_api_key",
+        "deepseek": "deepseek_api_key",
+        "xai": "xai_api_key",
+    }.get(provider)
+    if provider == "ollama":
+        return None  # local endpoint, no API key required
+    if required_key and not getattr(settings, required_key, ""):
+        return provider, required_key.upper()
+    return None
+
+
 def _check_config_warnings() -> None:
     _DEFAULT_FORGEJO_URL = "https://forgejo.example.com"
     if not settings.forgejo_org and not settings.github_org:
         logger.warning(
             "No org configured (FORGEJO_ORG / GITHUB_ORG). "
             "Repo discovery is disabled. Set one in .env or the Configuration page."
+        )
+    missing_llm = _missing_llm_credential()
+    if missing_llm:
+        logger.warning(
+            "LLM provider '%s' is selected but %s is empty - the agent will fail "
+            "on the first analysis (runs end in 'error'). Set it in .env or the "
+            "Configuration page.",
+            missing_llm[0],
+            missing_llm[1],
         )
     if settings.forgejo_org and not settings.forgejo_token:
         logger.warning(

@@ -231,6 +231,18 @@ class TestConfigPage:
         assert "@BotFather" in resp.text
         assert "getUpdates" in resp.text
 
+    def test_contains_run_history_retention_field(self) -> None:
+        resp = _client.get("/config", cookies=_admin_cookie())
+        assert 'name="run_history_ttl_hours"' in resp.text
+        assert "Run History Retention" in resp.text
+
+    def test_get_settings_coerces_int_fields(self) -> None:
+        from ui.app import _get_settings
+
+        with patch("ui.app.read_env_redacted", return_value={"run_history_ttl_hours": "720"}):
+            s = _get_settings()
+        assert s.run_history_ttl_hours == 720
+
     def test_theme_toggle_has_aria_label(self) -> None:
         resp = _client.get("/config", cookies=_admin_cookie())
         assert 'aria-label="Toggle color theme"' in resp.text
@@ -632,6 +644,22 @@ class TestSettingsAPI:
         assert resp.json()["saved"] == 1
         written = mock_write.call_args.args[0]
         assert written["llm_rate_limit_per_minute"] == "0"
+
+    def test_put_run_history_ttl_hours_persists(self) -> None:
+        with patch("ui.app.write_env") as mock_write:
+            resp = _client.put(
+                "/api/settings",
+                content=json.dumps({"run_history_ttl_hours": "720"}),
+                headers={"Content-Type": "application/json"},
+                cookies=_admin_cookie(),
+            )
+        assert resp.status_code == 200
+        assert resp.json()["saved"] == 1
+        written = mock_write.call_args.args[0]
+        assert written["run_history_ttl_hours"] == "720"
+        from config import settings as live
+
+        assert live.run_history_ttl_hours == 720
 
     def test_put_webhook_secrets_persist(self) -> None:
         payload = {"forgejo_webhook_secret": "fj-secret", "github_webhook_secret": "gh-secret"}

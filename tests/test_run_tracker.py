@@ -41,6 +41,12 @@ class TestRunTracker:
         assert await self.tracker.is_duplicate("owner/repo", "123") is False
 
     @pytest.mark.asyncio
+    async def test_error_not_duplicate(self) -> None:
+        """A run in 'error' (agent crash) must NOT block a fresh webhook so re-runs recover."""
+        await self.tracker.record("owner/repo", "123", status="error")
+        assert await self.tracker.is_duplicate("owner/repo", "123") is False
+
+    @pytest.mark.asyncio
     async def test_different_runs_not_duplicates(self) -> None:
         await self.tracker.record("owner/repo", "123", status="PASSED")
         assert await self.tracker.is_duplicate("owner/repo", "456") is False

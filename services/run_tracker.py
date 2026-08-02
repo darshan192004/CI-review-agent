@@ -8,6 +8,8 @@ from typing import Any
 
 import aiosqlite
 
+from config import settings
+
 logger = logging.getLogger(__name__)
 
 _DB_PATH = Path(".ci_runs.db")
@@ -121,13 +123,16 @@ class RunTracker:
         status = await self.get_run_status(repository, run_id, run_attempt)
         if status is None:
             return False
+        # 'error' is deliberately NOT terminal here: it means the agent crashed
+        # (e.g. missing LLM credentials), not that the CI run concluded. A fresh
+        # webhook for the same run must re-enter the pipeline so a re-run or
+        # redelivery can recover once the config is fixed.
         return status in (
             "PASSED",
             "EXHAUSTED",
             "CANNOT_FIX",
             "FIX_PUSHED",
             "AGENT_WORKING",
-            "error",
             "success",
         )
 
@@ -526,4 +531,4 @@ class RunTracker:
         }
 
 
-run_tracker = RunTracker()
+run_tracker = RunTracker(ttl_seconds=max(60, settings.run_history_ttl_hours * 3600))

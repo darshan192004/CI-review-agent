@@ -146,10 +146,17 @@ def _get_settings() -> Any:
         "llm_rate_limit_burst",
         "llm_max_retries",
         "llm_retry_backoff_seconds",
+        "run_history_ttl_hours",
         "server_host",
         "server_port",
     ]:
-        setattr(s, k, redacted.get(k, getattr(settings, k, "")))
+        value = redacted.get(k, getattr(settings, k, ""))
+        if k in _INT_SETTING_KEYS:
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                pass
+        setattr(s, k, value)
     return s
 
 
@@ -579,6 +586,7 @@ _INT_SETTING_KEYS = {
     "llm_rate_limit_per_minute",
     "llm_rate_limit_burst",
     "llm_max_retries",
+    "run_history_ttl_hours",
 }
 _FLOAT_SETTING_KEYS = {"llm_retry_backoff_seconds"}
 _SETTING_NUMERIC_DEFAULTS = {
@@ -589,6 +597,7 @@ _SETTING_NUMERIC_DEFAULTS = {
     "llm_rate_limit_burst": "0",
     "llm_max_retries": "3",
     "llm_retry_backoff_seconds": "2.0",
+    "run_history_ttl_hours": "168",
 }
 
 
@@ -654,6 +663,7 @@ async def update_settings(request: Request, _user: User = Depends(require_admin_
         "llm_rate_limit_burst",
         "llm_max_retries",
         "llm_retry_backoff_seconds",
+        "run_history_ttl_hours",
     }
 
     # Filter out redacted values ("••••••••") so we don't overwrite real secrets

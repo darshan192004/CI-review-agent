@@ -7,14 +7,15 @@ import time
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from config import settings
 from services.auth import (
-    User,
     _COOKIE_NAME,
+    User,
     authenticate_user,
     create_session,
     destroy_session,
@@ -675,9 +676,9 @@ async def trigger_test_run(
     _user: User = Depends(require_admin_role),
     repo: str = Query("", alias="repo"),
 ) -> JSONResponse:
-    from server import broadcast_event
-
     import random
+
+    from server import broadcast_event
 
     run_id = str(random.randint(1000, 9999))
     if not repo:
@@ -730,8 +731,6 @@ async def clear_history(_user: User = Depends(require_admin_role)) -> JSONRespon
 
 @router.post("/api/test/ollama")
 async def test_ollama(_user: User = Depends(require_admin_role)) -> JSONResponse:
-    import httpx
-
     base = settings.ollama_base_url.rstrip("/")
     try:
         async with httpx.AsyncClient(timeout=5) as client:
@@ -751,8 +750,6 @@ async def test_ollama(_user: User = Depends(require_admin_role)) -> JSONResponse
 
 @router.post("/api/test/github")
 async def test_github(_user: User = Depends(require_admin_role)) -> JSONResponse:
-    import httpx
-
     if not settings.github_token:
         return JSONResponse(status_code=400, content={"ok": False, "detail": "GitHub token not configured"})
     try:
@@ -773,8 +770,6 @@ async def test_github(_user: User = Depends(require_admin_role)) -> JSONResponse
 
 @router.post("/api/test/forgejo")
 async def test_forgejo(_user: User = Depends(require_admin_role)) -> JSONResponse:
-    import httpx
-
     token = settings.forgejo_token
     base = settings.forgejo_base_url.rstrip("/")
     if not token or "example.com" in base:
@@ -798,6 +793,14 @@ async def test_forgejo(_user: User = Depends(require_admin_role)) -> JSONRespons
         return JSONResponse(status_code=502, content={"ok": False, "detail": str(e)})
 
 
+def _messaging_error_detail(exc: httpx.HTTPError, platform: str) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return (
+            f"{platform} API rejected the request (HTTP {exc.response.status_code}). Check the configured credentials."
+        )
+    return f"{platform} API request failed ({type(exc).__name__}). Check the configured credentials and network access."
+
+
 @router.post("/api/test/messaging")
 async def test_messaging(_user: User = Depends(require_admin_role)) -> JSONResponse:
     platform = settings.messaging_platform
@@ -811,5 +814,7 @@ async def test_messaging(_user: User = Depends(require_admin_role)) -> JSONRespo
         return JSONResponse(content={"ok": True, "detail": detail})
     except ValueError as e:
         return JSONResponse(status_code=400, content={"ok": False, "detail": str(e)})
+    except httpx.HTTPError as e:
+        return JSONResponse(status_code=502, content={"ok": False, "detail": _messaging_error_detail(e, platform)})
     except Exception as e:
         return JSONResponse(status_code=502, content={"ok": False, "detail": str(e)})

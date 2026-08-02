@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -734,6 +735,23 @@ class TestConnectionTestEndpoints:
         assert resp.status_code == 502
         data = resp.json()
         assert data["ok"] is False
+
+    @patch("ui.app.send_alert", new_callable=AsyncMock)
+    def test_messaging_error_does_not_leak_token(self, mock_send: object) -> None:
+        token = "123456789:AAHXEvPYR9m6I8jt3BT3h9_SY2eTGgphPtM"
+        request = httpx.Request("POST", f"https://api.telegram.org/bot{token}/sendMessage")
+        response = httpx.Response(404, request=request)
+        mock_send.side_effect = httpx.HTTPStatusError(
+            f"Client error '404 Not Found' for url '{request.url}'",
+            request=request,
+            response=response,
+        )
+        resp = _client.post("/api/test/messaging", cookies=_admin_cookie())
+        assert resp.status_code == 502
+        data = resp.json()
+        assert data["ok"] is False
+        assert token not in data["detail"]
+        assert "credentials" in data["detail"]
 
     @patch("ui.app.send_alert", new_callable=AsyncMock)
     def test_messaging_success(self, mock_send: object) -> None:

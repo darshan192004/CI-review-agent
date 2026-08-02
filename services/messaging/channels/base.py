@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 from services.messaging.formats import AlertPayload
 
 
@@ -30,4 +32,7 @@ class WebhookChannel(BaseChannel):
     def _endpoint(self) -> str:
         if not self.webhook_url:
             raise ValueError(f"{self.name} webhook URL not configured")
+        parsed = urlparse(self.webhook_url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError(f"{self.name} webhook URL must be a valid http(s) URL")
         return self.webhook_url

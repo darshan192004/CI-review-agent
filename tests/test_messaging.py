@@ -8,6 +8,8 @@ from services.messaging import notification_allowed
 from services.messaging.channels import get_channel
 from services.messaging.formats import AlertPayload
 
+VALID_TG_TOKEN = "123456789:AAHXEvPYR9m6I8jt3BT3h9_SY2eTGgphPtM"
+
 
 def _payload(platform: str = "slack") -> AlertPayload:
     return AlertPayload(
@@ -71,7 +73,7 @@ class TestChannelSend:
 
     @pytest.mark.asyncio
     async def test_telegram_posts_to_bot_endpoint(self) -> None:
-        channel = get_channel("telegram", bot_token="tok123", chat_id="chat456")
+        channel = get_channel("telegram", bot_token=VALID_TG_TOKEN, chat_id="123456789")
         captured: dict = {}
 
         async def fake_post(url: str, body: dict) -> None:
@@ -81,8 +83,8 @@ class TestChannelSend:
         channel._post = fake_post  # type: ignore[method-assign]
         await channel.send(_payload("telegram"))
 
-        assert captured["url"] == "https://api.telegram.org/bottok123/sendMessage"
-        assert captured["body"]["chat_id"] == "chat456"
+        assert captured["url"] == f"https://api.telegram.org/bot{VALID_TG_TOKEN}/sendMessage"
+        assert captured["body"]["chat_id"] == "123456789"
         assert "text" in captured["body"]
 
     def test_missing_webhook_url_raises(self) -> None:
@@ -96,9 +98,38 @@ class TestChannelSend:
             channel._endpoint()
 
     def test_missing_telegram_chat_id_raises(self) -> None:
-        channel = get_channel("telegram", bot_token="tok123")
+        channel = get_channel("telegram", bot_token=VALID_TG_TOKEN)
         with pytest.raises(ValueError):
             channel.build_body(_payload("telegram"))
+
+    @pytest.mark.parametrize(
+        "bad_token",
+        [
+            "tok123",
+            "AAHXEvPYR9m6I8jt3BT3h9_SY2eTGgphPtM",
+            "12345",
+            "abc:xyz",
+        ],
+    )
+    def test_telegram_malformed_token_raises(self, bad_token: str) -> None:
+        channel = get_channel("telegram", bot_token=bad_token, chat_id="chat456")
+        with pytest.raises(ValueError, match="[Ff]ormat"):
+            channel._endpoint()
+
+    def test_telegram_malformed_chat_id_raises(self) -> None:
+        channel = get_channel("telegram", bot_token=VALID_TG_TOKEN, chat_id="chat456")
+        with pytest.raises(ValueError, match="numeric"):
+            channel.build_body(_payload("telegram"))
+
+    @pytest.mark.parametrize(
+        "bad_url",
+        ["not-a-url", "example.com/hook", "ftp://example.com/hook", "http://", "https://"],
+    )
+    @pytest.mark.parametrize("platform", ["slack", "mattermost", "discord"])
+    def test_invalid_webhook_url_raises(self, platform: str, bad_url: str) -> None:
+        channel = get_channel(platform, webhook_url=bad_url)
+        with pytest.raises(ValueError, match="http"):
+            channel._endpoint()
 
 
 class TestNotificationGating:

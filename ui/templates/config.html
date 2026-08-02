@@ -43,6 +43,7 @@
               <option value="gemini" {% if settings.llm_provider == 'gemini' %}selected{% endif %}>Google Gemini (AI Studio)</option>
               <option value="ollama" {% if settings.llm_provider == 'ollama' %}selected{% endif %}>Ollama (Local LLM)</option>
               <option value="azure_openai" {% if settings.llm_provider == 'azure_openai' %}selected{% endif %}>Azure OpenAI Service</option>
+              <option value="groq" {% if settings.llm_provider == 'groq' %}selected{% endif %}>Groq (Llama 3.3 / Fast Cloud LLM)</option>
             </select>
           </div>
 
@@ -126,6 +127,33 @@
               <div class="secret-wrapper">
                 <input type="password" id="gemini_api_key" name="gemini_api_key" value="{{ settings.gemini_api_key }}" placeholder="AIza..." class="input-field font-mono text-xs">
                 <button type="button" onclick="toggleSecret('gemini_api_key', this)" class="secret-toggle">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Groq Options -->
+          <div class="p-4 ci-panel-bg space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-semibold text-orange-400">Groq Cloud Engine</span>
+              <span class="text-[10px] ci-text-dim font-mono">Cloud</span>
+            </div>
+            <div>
+              <label class="block text-[11px] ci-text-muted mb-1">Select Model Preset</label>
+              <select name="groq_model" class="select-field text-xs">
+                <option value="llama-3.3-70b-versatile" {% if settings.groq_model == 'llama-3.3-70b-versatile' %}selected{% endif %}>llama-3.3-70b-versatile (Recommended)</option>
+                <option value="llama-3.3-70b-specdec" {% if settings.groq_model == 'llama-3.3-70b-specdec' %}selected{% endif %}>llama-3.3-70b-specdec</option>
+                <option value="llama-3.1-8b-instant" {% if settings.groq_model == 'llama-3.1-8b-instant' %}selected{% endif %}>llama-3.1-8b-instant (Fast)</option>
+                <option value="llama3-70b-8192" {% if settings.groq_model == 'llama3-70b-8192' %}selected{% endif %}>llama3-70b-8192</option>
+                <option value="llama3-8b-8192" {% if settings.groq_model == 'llama3-8b-8192' %}selected{% endif %}>llama3-8b-8192 (Lightweight)</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-[11px] ci-text-muted mb-1">Groq API Key</label>
+              <div class="secret-wrapper">
+                <input type="password" id="groq_api_key" name="groq_api_key" value="{{ settings.groq_api_key }}" placeholder="gsk_..." class="input-field font-mono text-xs">
+                <button type="button" onclick="toggleSecret('groq_api_key', this)" class="secret-toggle">
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                 </button>
               </div>

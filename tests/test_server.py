@@ -226,6 +226,20 @@ class TestMissingLlmCredential:
         monkeypatch.setattr(settings, "llm_provider", "ollama")
         assert _missing_llm_credential() is None
 
+    def test_groq_without_key(self, monkeypatch) -> None:
+        from server import _missing_llm_credential
+
+        monkeypatch.setattr(settings, "llm_provider", "groq")
+        monkeypatch.setattr(settings, "groq_api_key", "")
+        assert _missing_llm_credential() == ("groq", "GROQ_API_KEY")
+
+    def test_groq_with_key(self, monkeypatch) -> None:
+        from server import _missing_llm_credential
+
+        monkeypatch.setattr(settings, "llm_provider", "groq")
+        monkeypatch.setattr(settings, "groq_api_key", "gsk-test")
+        assert _missing_llm_credential() is None
+
 
 class TestResolveStoredRun:
     @pytest.mark.asyncio

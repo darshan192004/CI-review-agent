@@ -236,6 +236,13 @@ class TestConfigPage:
         assert 'name="run_history_ttl_hours"' in resp.text
         assert "Run History Retention" in resp.text
 
+    def test_contains_groq_fields(self) -> None:
+        resp = _client.get("/config", cookies=_admin_cookie())
+        assert 'value="groq"' in resp.text
+        assert 'name="groq_api_key"' in resp.text
+        assert 'name="groq_model"' in resp.text
+        assert "groq" in resp.text.lower()
+
     def test_get_settings_coerces_int_fields(self) -> None:
         from ui.app import _get_settings
 
@@ -690,6 +697,34 @@ class TestSettingsAPI:
             resp = _client.put(
                 "/api/settings",
                 content=json.dumps({"github_token": "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"}),
+                headers={"Content-Type": "application/json"},
+                cookies=_admin_cookie(),
+            )
+        assert resp.status_code == 200
+        assert resp.json()["saved"] == 0
+        mock_write.assert_not_called()
+
+    def test_put_groq_settings_persist(self) -> None:
+        payload = {"groq_api_key": "gsk-new", "groq_model": "llama-3.3-70b-versatile", "llm_provider": "groq"}
+        with patch("ui.app.write_env") as mock_write:
+            resp = _client.put(
+                "/api/settings",
+                content=json.dumps(payload),
+                headers={"Content-Type": "application/json"},
+                cookies=_admin_cookie(),
+            )
+        assert resp.status_code == 200
+        assert resp.json()["saved"] == 3
+        written = mock_write.call_args.args[0]
+        assert written["groq_api_key"] == "gsk-new"
+        assert written["groq_model"] == "llama-3.3-70b-versatile"
+        assert written["llm_provider"] == "groq"
+
+    def test_put_ignores_redacted_groq_key(self) -> None:
+        with patch("ui.app.write_env") as mock_write:
+            resp = _client.put(
+                "/api/settings",
+                content=json.dumps({"groq_api_key": "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"}),
                 headers={"Content-Type": "application/json"},
                 cookies=_admin_cookie(),
             )

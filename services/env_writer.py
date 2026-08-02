@@ -15,6 +15,7 @@ _SENSITIVE_KEYS = {
     "forgejo_token",
     "openai_api_key",
     "anthropic_api_key",
+    "groq_api_key",
     "forgejo_webhook_secret",
     "github_webhook_secret",
     "mattermost_webhook_url",
@@ -68,9 +69,7 @@ def write_env(updates: dict[str, str], path: Path = _ENV_PATH) -> None:
                     comments.append(stripped)
                     lines.append(stripped)
                     continue
-                match = re.match(
-                    r"^(export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)", stripped
-                )
+                match = re.match(r"^(export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)", stripped)
                 if match:
                     key = match.group(2)
                     existing[key] = stripped

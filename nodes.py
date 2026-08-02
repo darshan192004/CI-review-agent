@@ -12,6 +12,7 @@ from config import settings
 from services.ci_client import CIClient, create_ci_client
 from services.commit_message import build_commit_message, derive_scope, derive_summary
 from services.git_manager import GitError, WorkspaceGitManager
+from services.llm_client import create_chat_model
 from services.messaging import notification_allowed, send_alert
 from services.rate_limiter import invoke_with_llm_rate_limit
 from state import AgentState, FileFix, RepairAnalysis
@@ -20,109 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 def _get_llm() -> Any:
-    provider = settings.llm_provider
-
-    if provider == "anthropic":
-        from langchain_anthropic import ChatAnthropic
-
-        return ChatAnthropic(
-            model=settings.anthropic_model,
-            api_key=settings.anthropic_api_key,
-        )
-
-    if provider == "bedrock":
-        from langchain_aws import ChatBedrock
-
-        return ChatBedrock(
-            model=settings.bedrock_model,
-            region_name=settings.bedrock_region,
-            aws_access_key_id=settings.bedrock_aws_access_key_id or None,
-            aws_secret_access_key=settings.bedrock_aws_secret_access_key or None,
-        )
-
-    if provider == "azure_openai":
-        from langchain_openai import AzureChatOpenAI
-
-        return AzureChatOpenAI(
-            azure_deployment=settings.azure_openai_deployment,
-            api_version=settings.azure_openai_api_version,
-            azure_endpoint=settings.azure_openai_endpoint,
-            api_key=settings.azure_openai_api_key,
-        )
-
-    if provider == "gemini":
-        from langchain_google_genai import ChatGoogleGenerativeAI
-
-        return ChatGoogleGenerativeAI(
-            model=settings.gemini_model,
-            google_api_key=settings.gemini_api_key,
-        )
-
-    if provider == "mistral":
-        from langchain_mistralai import ChatMistralAI
-
-        return ChatMistralAI(
-            model=settings.mistral_model,
-            api_key=settings.mistral_api_key,
-        )
-
-    if provider == "cohere":
-        from langchain_cohere import ChatCohere
-
-        return ChatCohere(
-            model=settings.cohere_model,
-            api_key=settings.cohere_api_key,
-        )
-
-    if provider == "groq":
-        from langchain_groq import ChatGroq
-
-        return ChatGroq(
-            model=settings.groq_model,
-            api_key=settings.groq_api_key,
-        )
-
-    if provider == "together":
-        from langchain_together import ChatTogether
-
-        return ChatTogether(
-            model=settings.together_model,
-            api_key=settings.together_api_key,
-        )
-
-    if provider == "deepseek":
-        from langchain_openai import ChatOpenAI
-
-        return ChatOpenAI(
-            model=settings.deepseek_model,
-            api_key=settings.deepseek_api_key,
-            base_url=settings.deepseek_base_url,
-        )
-
-    if provider == "xai":
-        from langchain_openai import ChatOpenAI
-
-        return ChatOpenAI(
-            model=settings.xai_model,
-            api_key=settings.xai_api_key,
-            base_url=settings.xai_base_url,
-        )
-
-    if provider == "ollama":
-        from langchain_ollama import ChatOllama
-
-        return ChatOllama(
-            model=settings.ollama_model,
-            base_url=settings.ollama_base_url,
-        )
-
-    # Default: OpenAI
-    from langchain_openai import ChatOpenAI
-
-    return ChatOpenAI(
-        model=settings.openai_model,
-        api_key=settings.openai_api_key,
-    )
+    return create_chat_model(settings.llm_provider)
 
 
 def _build_ci_client(state: AgentState) -> CIClient:

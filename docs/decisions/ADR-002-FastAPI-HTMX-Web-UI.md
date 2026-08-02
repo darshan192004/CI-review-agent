@@ -10,7 +10,7 @@ Accepted
 The agent requires an intuitive, high-performance web interface for:
 - Live monitoring of active and historical CI runs.
 - Interactive configuration of credentials (tokens, webhooks, LLM models).
-- Instant connection testing for GitHub, Forgejo, local Ollama, and MCP transports.
+- Instant connection testing for GitHub, Forgejo, local Ollama, and messaging channels.
 
 Requirements:
 - Minimal footprint and zero build-step overhead.

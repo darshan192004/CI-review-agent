@@ -21,9 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
-    serve_parser = subparsers.add_parser(
-        "serve", help="Start the webhook receiver server"
-    )
+    serve_parser = subparsers.add_parser("serve", help="Start the webhook receiver server")
     serve_parser.add_argument(
         "--host",
         default=settings.server_host,
@@ -36,12 +34,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Bind port (default: {settings.server_port})",
     )
 
-    run_parser = subparsers.add_parser(
-        "run", help="Run agent directly against a CI run"
-    )
-    run_parser.add_argument(
-        "--repo", required=True, help="Repository in owner/repo format"
-    )
+    run_parser = subparsers.add_parser("run", help="Run agent directly against a CI run")
+    run_parser.add_argument("--repo", required=True, help="Repository in owner/repo format")
     run_parser.add_argument("--run-id", required=True, help="CI run ID")
     run_parser.add_argument(
         "--platform",
@@ -49,16 +43,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="github",
         help="CI platform (default: github)",
     )
-    run_parser.add_argument(
-        "--branch", default="main", help="Branch name (default: main)"
-    )
+    run_parser.add_argument("--branch", default="main", help="Branch name (default: main)")
     run_parser.add_argument("--commit-sha", default="", help="Commit SHA")
-    run_parser.add_argument(
-        "--source-files", nargs="*", help="Source file paths for LLM context"
-    )
+    run_parser.add_argument("--source-files", nargs="*", help="Source file paths for LLM context")
     run_parser.add_argument(
         "--messaging-platform",
-        choices=["mattermost", "slack", "discord"],
+        choices=["mattermost", "slack", "discord", "telegram"],
         default="mattermost",
         help="Messaging platform for notifications (default: mattermost)",
     )
@@ -73,9 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def run_agent(
-    state: AgentState, use_dev_checkpointer: bool = True
-) -> dict[str, Any]:
+async def run_agent(state: AgentState, use_dev_checkpointer: bool = True) -> dict[str, Any]:
     checkpointer = None
     if not use_dev_checkpointer:
         try:
@@ -87,9 +75,7 @@ async def run_agent(
                 result = await graph.ainvoke(state, config=config)
                 return result
         except Exception as e:
-            logger.warning(
-                "SQLite checkpointer failed, falling back to InMemorySaver: %s", e
-            )
+            logger.warning("SQLite checkpointer failed, falling back to InMemorySaver: %s", e)
 
     graph = build_graph(checkpointer=checkpointer)
     config = {"configurable": {"thread_id": state.get("run_id", "default")}}
@@ -166,9 +152,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             pass
 
     try:
-        result = loop.run_until_complete(
-            run_agent(initial_state, use_dev_checkpointer=args.dev)
-        )
+        result = loop.run_until_complete(run_agent(initial_state, use_dev_checkpointer=args.dev))
         logger.info("Agent completed. Final status: %s", result.get("ci_status"))
         logger.info("Notifications sent: %s", result.get("notifications_sent", []))
         sys.exit(0)

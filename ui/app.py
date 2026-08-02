@@ -22,8 +22,11 @@ from services.auth import (
     require_admin_role,
 )
 from services.env_writer import read_env_redacted, write_env
+from services.messaging import send_alert
 from services.run_tracker import run_tracker
 from ui.badges import status_badge
+from ui.formatters import format_failure_summary, format_run_time
+from ui.status import canonical_status
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,8 @@ router = APIRouter()
 
 templates = Jinja2Templates(directory=str(_UI_DIR / "templates"))
 templates.env.globals["status_badge"] = status_badge
+templates.env.globals["format_run_time"] = format_run_time
+templates.env.globals["format_failure_summary"] = format_failure_summary
 
 
 # ---------------------------------------------------------------------------
@@ -79,11 +84,10 @@ async def logout(request: Request) -> RedirectResponse:
 
 
 def _format_uptime(seconds: float) -> str:
-    if seconds < 60:
-        return f"{int(seconds)}s"
-    if seconds < 3600:
-        return f"{int(seconds // 60)}m {int(seconds % 60)}s"
-    return f"{int(seconds // 3600)}h {int((seconds % 3600) // 60)}m"
+    total = max(0, int(seconds))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    return f"{hours}h {minutes}m {secs}s"
 
 
 def _get_uptime_seconds() -> float:
@@ -115,11 +119,12 @@ def _get_settings() -> Any:
         "azure_openai_endpoint",
         "azure_openai_api_key",
         "azure_openai_deployment",
-        "mcp_server_command",
         "messaging_platform",
         "mattermost_webhook_url",
         "slack_webhook_url",
         "discord_webhook_url",
+        "telegram_bot_token",
+        "telegram_chat_id",
         "forgejo_webhook_secret",
         "github_webhook_secret",
         "max_retry_attempts",
@@ -156,8 +161,7 @@ def _get_settings() -> Any:
 async def dashboard(request: Request, _user: User = Depends(get_current_user)) -> HTMLResponse:
     counts = await run_tracker.count_by_status()
     recent = await run_tracker.get_all_runs()
-    recent = recent[-10:]
-    recent.reverse()
+    recent = recent[:10]
     uptime = _format_uptime(_get_uptime_seconds())
 
     return templates.TemplateResponse(
@@ -167,7 +171,10 @@ async def dashboard(request: Request, _user: User = Depends(get_current_user)) -
             "active_page": "dashboard",
             "active_count": counts.get("processing", 0),
             "success_count": counts.get("PASSED", 0) + counts.get("success", 0),
-            "failed_count": counts.get("FAILED", 0) + counts.get("failed", 0) + counts.get("error", 0),
+            "failed_count": counts.get("FAILED", 0)
+            + counts.get("failed", 0)
+            + counts.get("failure", 0)
+            + counts.get("error", 0),
             "uptime": uptime,
             "recent_runs": [
                 {
@@ -182,6 +189,7 @@ async def dashboard(request: Request, _user: User = Depends(get_current_user)) -
                     "attempt_count": r.get("attempt_count", 0),
                     "failure_summary": r.get("failure_summary", ""),
                     "patch_summary": r.get("patch_summary", ""),
+                    "run_time": format_run_time(r.get("created_at", 0)),
                 }
                 for r in recent
             ],
@@ -210,10 +218,9 @@ async def runs_page(
     _user: User = Depends(get_current_user),
 ) -> HTMLResponse:
     all_runs = await run_tracker.get_all_runs()
-    all_runs.reverse()
 
     if status:
-        all_runs = [r for r in all_runs if r["status"] == status]
+        all_runs = [r for r in all_runs if canonical_status(r["status"]) == canonical_status(status)]
     if platform:
         all_runs = [r for r in all_runs if r.get("platform") == platform]
 
@@ -229,6 +236,7 @@ async def runs_page(
             "author": r.get("author", ""),
             "failure_summary": r.get("failure_summary", ""),
             "patch_summary": r.get("patch_summary", ""),
+            "run_time": format_run_time(r.get("created_at", 0)),
         }
         for r in all_runs
     ]
@@ -258,7 +266,6 @@ async def dashboard_partial(
     repo: str = Query("", alias="repo"),
 ) -> HTMLResponse:
     recent = await run_tracker.get_all_runs()
-    recent.reverse()
 
     if repo:
         recent = [r for r in recent if r["repository"] == repo]
@@ -267,9 +274,10 @@ async def dashboard_partial(
     e = html_mod.escape
     for run in recent:
         commit_short = e(run.get("commit_sha", "")[:8]) if run.get("commit_sha") else "\u2014"
-        rows += f"""<tr>
+        run_time = format_run_time(run.get("created_at", 0))
+        rows += f"""<tr id="run-{e(run["repository"])}:{e(run["run_id"])}:{e(run.get("run_attempt", "1"))}">
             <td class="font-mono text-xs text-indigo-400">{e(run["repository"])}</td>
-            <td class="font-mono text-xs text-slate-400">#{e(run["run_id"])}</td>
+            <td class="font-mono text-xs text-slate-400">{e(run_time)}</td>
             <td class="font-mono text-xs text-slate-400">#{e(run.get("run_attempt", "1"))}</td>
             <td>{status_badge(run["status"])}</td>
             <td class="text-xs text-slate-400 uppercase font-mono">{e(run.get("platform", "\u2014"))}</td>
@@ -282,7 +290,7 @@ async def dashboard_partial(
       <thead>
         <tr>
           <th scope="col">Repository</th>
-          <th scope="col">Run ID</th>
+          <th scope="col">Run Time (IST)</th>
           <th scope="col">Attempt</th>
           <th scope="col">Status</th>
           <th scope="col">Platform</th>
@@ -324,7 +332,9 @@ async def metrics_partial(
         counts = await run_tracker.count_by_status()
         active_cnt = counts.get("processing", 0) + counts.get("AGENT_WORKING", 0)
         success_cnt = counts.get("PASSED", 0) + counts.get("success", 0)
-        failed_cnt = counts.get("FAILED", 0) + counts.get("failed", 0) + counts.get("error", 0)
+        failed_cnt = (
+            counts.get("FAILED", 0) + counts.get("failed", 0) + counts.get("failure", 0) + counts.get("error", 0)
+        )
 
     uptime = _format_uptime(_get_uptime_seconds())
 
@@ -413,6 +423,7 @@ async def list_repos(_user: User = Depends(get_current_user)) -> JSONResponse:
             "status": status,
             "detail": detail,
             "configured": is_discovery_configured(),
+            "disable_popup": settings.disable_auto_discovery_popup == "true",
         }
     )
 
@@ -428,10 +439,21 @@ def _summarize_discovery(results: list[dict[str, Any]]) -> tuple[str, str]:
 
 
 @router.post("/api/discovery/dismiss")
-async def dismiss_discovery(_user: User = Depends(require_admin_role)) -> JSONResponse:
-    """Mark discovery as configured so the first-run popup stops showing."""
-    write_env({"discovery_configured": "true"})
+async def dismiss_discovery(request: Request, _user: User = Depends(require_admin_role)) -> JSONResponse:
+    """Mark discovery as configured so the first-run popup stops showing.
+
+    The optional ``disable_auto_discovery_popup`` checkbox persists a global
+    preference to bypass the popup entirely on future logins (otherwise the
+    popup shows on every login until the admin configures discovery).
+    """
+    form = await request.form()
+    never_again = str(form.get("disable_auto_discovery_popup", "")).strip().lower() in ("1", "true", "on", "yes")
+    updates = {"discovery_configured": "true"}
     settings.discovery_configured = "true"
+    if never_again:
+        updates["disable_auto_discovery_popup"] = "true"
+        settings.disable_auto_discovery_popup = "true"
+    write_env(updates)
     return JSONResponse(content={"ok": True})
 
 
@@ -487,14 +509,14 @@ async def seed_run_history(
         logger.error("History seed failed: %s", e)
 
     recent = await run_tracker.get_all_runs()
-    recent.reverse()
     rows = ""
     e = html_mod.escape
     for run in recent:
         commit_short = e(run.get("commit_sha", "")[:8]) if run.get("commit_sha") else "\u2014"
+        run_time = format_run_time(run.get("created_at", 0))
         rows += f"""<tr id="run-{e(run["repository"])}:{e(run["run_id"])}:{e(run.get("run_attempt", "1"))}">
             <td class="font-mono text-xs text-indigo-400">{e(run["repository"])}</td>
-            <td class="font-mono text-xs text-slate-400">#{e(run["run_id"])}</td>
+            <td class="font-mono text-xs text-slate-400">{e(run_time)}</td>
             <td class="font-mono text-xs text-slate-400">#{e(run.get("run_attempt", "1"))}</td>
             <td>{status_badge(run["status"])}</td>
             <td class="text-xs text-slate-400 uppercase font-mono">{e(run.get("platform", "\u2014"))}</td>
@@ -507,7 +529,7 @@ async def seed_run_history(
       <thead>
         <tr>
           <th scope="col">Repository</th>
-          <th scope="col">Run ID</th>
+          <th scope="col">Run Time (IST)</th>
           <th scope="col">Attempt</th>
           <th scope="col">Status</th>
           <th scope="col">Platform</th>
@@ -580,10 +602,11 @@ async def update_settings(request: Request, _user: User = Depends(require_admin_
         "forgejo_token",
         "forgejo_base_url",
         "messaging_platform",
-        "mcp_server_command",
         "mattermost_webhook_url",
         "slack_webhook_url",
         "discord_webhook_url",
+        "telegram_bot_token",
+        "telegram_chat_id",
         "openai_api_key",
         "openai_model",
         "anthropic_api_key",
@@ -775,143 +798,18 @@ async def test_forgejo(_user: User = Depends(require_admin_role)) -> JSONRespons
         return JSONResponse(status_code=502, content={"ok": False, "detail": str(e)})
 
 
-@router.post("/api/test/mcp")
-async def test_mcp(_user: User = Depends(require_admin_role)) -> JSONResponse:
-    import asyncio
-    import json
-    import os
-
-    command = settings.mcp_server_command
-    env = os.environ.copy()
-    env.update(settings.mcp_server_env_with_webhooks)
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            command,
-            "-transport",
-            "stdio",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-        )
-        init = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "ci-review-agent-test", "version": "0.1.0"},
-            },
-        }
-        proc.stdin.write((json.dumps(init) + "\n").encode())
-        await proc.stdin.drain()
-        try:
-            line = await asyncio.wait_for(proc.stdout.readline(), timeout=5)
-            proc.terminate()
-            resp = json.loads(line.decode())
-            if "result" in resp:
-                return JSONResponse(
-                    content={
-                        "ok": True,
-                        "server": resp["result"].get("serverInfo", {}).get("name", "unknown"),
-                    }
-                )
-            return JSONResponse(status_code=502, content={"ok": False, "detail": "Unexpected response"})
-        except asyncio.TimeoutError:
-            proc.terminate()
-            return JSONResponse(
-                status_code=502,
-                content={"ok": False, "detail": "MCP server did not respond"},
-            )
-    except FileNotFoundError:
-        return JSONResponse(
-            status_code=502,
-            content={"ok": False, "detail": f"Binary not found: {command}"},
-        )
-    except Exception as e:
-        return JSONResponse(status_code=502, content={"ok": False, "detail": str(e)})
-
-
 @router.post("/api/test/messaging")
 async def test_messaging(_user: User = Depends(require_admin_role)) -> JSONResponse:
-    import asyncio
-    import json
-    import os
-
-    command = settings.mcp_server_command
-    env = os.environ.copy()
-    env.update(settings.mcp_server_env_with_webhooks)
-
+    platform = settings.messaging_platform
     try:
-        proc = await asyncio.create_subprocess_exec(
-            command,
-            "-transport",
-            "stdio",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
+        detail = await send_alert(
+            platform,
+            incident_title="CI Agent Connection Test",
+            root_cause="Test notification from CI Review Agent. Ignore.",
+            resolution_steps="No action required.",
         )
-        init = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "ci-review-agent-test", "version": "0.1.0"},
-            },
-        }
-        proc.stdin.write((json.dumps(init) + "\n").encode())
-        await proc.stdin.drain()
-        await asyncio.wait_for(proc.stdout.readline(), timeout=5)
-
-        notif = {"jsonrpc": "2.0", "method": "notifications/initialized"}
-        proc.stdin.write((json.dumps(notif) + "\n").encode())
-        await proc.stdin.drain()
-
-        call = {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": {
-                "name": "send_alert",
-                "arguments": {
-                    "platform": settings.messaging_platform,
-                    "incident_title": "CI Agent Connection Test",
-                    "root_cause": "Test notification from CI Review Agent. Ignore.",
-                    "resolution_steps": "No action required.",
-                },
-            },
-        }
-        proc.stdin.write((json.dumps(call) + "\n").encode())
-        await proc.stdin.drain()
-
-        line = await asyncio.wait_for(proc.stdout.readline(), timeout=10)
-        proc.terminate()
-        resp = json.loads(line.decode())
-        if "result" in resp:
-            if not resp["result"].get("isError", False):
-                return JSONResponse(content={"ok": True, "detail": "Test notification sent"})
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "ok": False,
-                    "detail": resp["result"].get("content", [{}])[0].get("text", "MCP error"),
-                },
-            )
-        return JSONResponse(status_code=502, content={"ok": False, "detail": "Unexpected response"})
-    except FileNotFoundError:
-        return JSONResponse(
-            status_code=502,
-            content={"ok": False, "detail": f"Binary not found: {command}"},
-        )
-    except asyncio.TimeoutError:
-        return JSONResponse(
-            status_code=502,
-            content={"ok": False, "detail": "MCP server did not respond"},
-        )
+        return JSONResponse(content={"ok": True, "detail": detail})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"ok": False, "detail": str(e)})
     except Exception as e:
         return JSONResponse(status_code=502, content={"ok": False, "detail": str(e)})

@@ -125,7 +125,7 @@ graph TD
     N -->|Yes| O[Mark PASSED, notify success]
     N -->|No| P{Max retries?}
     P -->|No| F
-    P -->|Yes| Q[Mark FAILED, escalate via MCP]
+    P -->|Yes| Q[Mark FAILED, escalate via messaging]
 ```
 
 ---
@@ -279,7 +279,7 @@ graph TD
 | **Self-hosted Git support** | ✅ Forgejo, GitHub | ❌ GitHub only | ❌ GitLab only | ❌ CircleCI only |
 | **Autonomous fixing** | ✅ LLM-driven patches | ✅ Code suggestions only | ❌ No | ❌ No |
 | **Retry loop** | ✅ Up to N attempts | ❌ No | ❌ No | ❌ No |
-| **Escalation** | ✅ MCP to Slack/Mattermost | ❌ No | ✅ Email only | ✅ Webhooks only |
+| **Escalation** | ✅ Webhooks to Slack/Mattermost/Discord/Telegram | ❌ No | ✅ Email only | ✅ Webhooks only |
 | **Self-hosted runner** | ✅ Docker | ❌ No | ✅ Yes | ✅ Yes |
 | **Dashboard** | ✅ Real-time HTMX | ✅ GitHub-native | ✅ GitLab-native | ✅ CircleCI-native |
 | **Multi-LLM** | ✅ 4+ providers | ✅ OpenAI only | ❌ No | ❌ No |
@@ -292,7 +292,7 @@ graph TD
 1. **Forgejo-first**: Most CI tools ignore self-hosted Git platforms. We own this niche.
 2. **Open-core**: Free self-hosted version; paid cloud with managed runners and premium LLMs.
 3. **Agents, not assistants**: Unlike Copilot (human-in-the-loop), our agent operates autonomously.
-4. **MCP-native**: Universal messaging means it fits any team's comms stack.
+4. **Comms-agnostic**: In-process webhook delivery fits any team's comms stack.
 
 ---
 

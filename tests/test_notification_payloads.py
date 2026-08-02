@@ -1,12 +1,11 @@
 from config import Settings
 
+_PLATFORMS = ("mattermost", "slack", "discord", "telegram")
 
-class TestMcpPayloadConstruction:
+
+class TestNotificationPayloads:
     def test_fetch_logs_payload_matches_send_alert_schema(self):
-        settings = Settings(
-            messaging_platform="mattermost",
-            mcp_server_command="./test-binary",
-        )
+        settings = Settings(_env_file=None, messaging_platform="mattermost")
         repo = "owner/repo"
         branch = "main"
         sha = "abc123"
@@ -28,14 +27,14 @@ class TestMcpPayloadConstruction:
             ),
         }
 
-        assert payload["platform"] in ("mattermost", "slack", "discord")
+        assert payload["platform"] in _PLATFORMS
         assert "incident_title" in payload
         assert "root_cause" in payload
         assert "resolution_steps" in payload
         assert len(payload) == 4
 
     def test_success_payload_matches_send_alert_schema(self):
-        settings = Settings(messaging_platform="slack")
+        settings = Settings(_env_file=None, messaging_platform="slack")
         payload = {
             "platform": settings.messaging_platform,
             "incident_title": "CI Fixed: owner/repo",
@@ -48,7 +47,7 @@ class TestMcpPayloadConstruction:
         assert "resolution_steps" in payload
 
     def test_escalation_payload_matches_send_alert_schema(self):
-        settings = Settings(messaging_platform="discord")
+        settings = Settings(_env_file=None, messaging_platform="discord")
         payload = {
             "platform": settings.messaging_platform,
             "incident_title": "ESCALATION: CI Fix Failed (owner/repo)",
@@ -63,24 +62,14 @@ class TestMcpPayloadConstruction:
 
 class TestConfigDefaults:
     def test_messaging_platform_defaults_to_mattermost(self):
-        s = Settings()
+        s = Settings(_env_file=None)
         assert s.messaging_platform == "mattermost"
 
-    def test_mcp_server_command_configurable(self):
-        s = Settings(mcp_server_command="/usr/bin/my-mcp")
-        assert s.mcp_server_command == "/usr/bin/my-mcp"
+    def test_telegram_settings_default_to_empty(self):
+        s = Settings(_env_file=None)
+        assert s.telegram_bot_token == ""
+        assert s.telegram_chat_id == ""
 
-    def test_webhook_urls_collected(self):
-        s = Settings(
-            mattermost_webhook_url="https://mm.example.com/hooks/123",
-            slack_webhook_url="https://hooks.slack.com/xxx",
-        )
-        env = s.mcp_server_env_with_webhooks
-        assert env["MATTERMOST_WEBHOOK_URL"] == "https://mm.example.com/hooks/123"
-        assert env["SLACK_WEBHOOK_URL"] == "https://hooks.slack.com/xxx"
-        assert "DISCORD_WEBHOOK_URL" not in env
-
-    def test_empty_webhooks_produces_empty_env(self):
-        s = Settings()
-        env = s.mcp_server_env_with_webhooks
-        assert env == {}
+    def test_notification_trigger_level_defaults_to_failures_only(self):
+        s = Settings(_env_file=None)
+        assert s.notification_trigger_level == "failures_only"

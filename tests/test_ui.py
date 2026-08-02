@@ -1,17 +1,14 @@
 from __future__ import annotations
 
 import json
-import os
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from fastapi.testclient import TestClient
 
 from config import settings
 from server import app
 from services.auth import User, create_session
-
 
 _client = TestClient(app, raise_server_exceptions=False)
 
@@ -34,6 +31,18 @@ def _seeded_runs_db(tmp_path):
     rt._DB_PATH = tmp_path / "ci_runs.db"
     yield
     rt._DB_PATH = original
+
+
+@pytest.fixture(autouse=True)
+def _restore_settings():
+    # The settings PUT endpoint mutates the live settings singleton; restore
+    # it after every test so webhook/route tests that read settings are not
+    # order-dependent on test_ui.py.
+    snapshot = settings.model_dump()
+    yield
+    for k, v in snapshot.items():
+        if hasattr(settings, k):
+            setattr(settings, k, v)
 
 
 class TestLoginPage:
@@ -92,7 +101,47 @@ class TestDashboardPage:
     def test_contains_history_skeleton(self) -> None:
         resp = _client.get("/", cookies=_admin_cookie())
         assert "runs-skeleton" in resp.text
-        assert 'hx-indicator="#runs-skeleton"' in resp.text
+
+
+class TestSkeletonOverhaul:
+    @pytest.fixture
+    def _isolated_runs_db(self, tmp_path):
+        import services.run_tracker as rt
+
+        original = rt._DB_PATH
+        rt._DB_PATH = tmp_path / "ci_runs.db"
+        yield
+        rt._DB_PATH = original
+
+    def test_dashboard_no_longer_auto_loads_history(self) -> None:
+        resp = _client.get("/", cookies=_admin_cookie())
+        assert 'hx-get="/api/runs/history"' not in resp.text
+        assert 'hx-trigger="load"' not in resp.text
+
+    def test_skeleton_hidden_by_default(self, _isolated_runs_db) -> None:
+        resp = _client.get("/", cookies=_admin_cookie())
+        assert 'id="runs-skeleton"' in resp.text
+        assert "htmx-indicator" not in resp.text
+
+    def test_skeleton_is_hidden_div_with_shimmer_not_table(self, _isolated_runs_db) -> None:
+        resp = _client.get("/", cookies=_admin_cookie())
+        assert '<div id="runs-skeleton" class="hidden overflow-x-auto"' in resp.text
+        assert '<div class="skeleton w-24 h-4"></div>' in resp.text
+
+    def test_seed_gated_to_cold_load(self) -> None:
+        resp = _client.get("/", cookies=_admin_cookie())
+        assert "ci-history-seeded" in resp.text
+        assert "sessionStorage" in resp.text
+
+    def test_dashboard_full_width(self) -> None:
+        resp = _client.get("/", cookies=_admin_cookie())
+        assert "max-w-7xl mx-auto" in resp.text
+        assert "max-w-6xl" not in resp.text
+
+    def test_runs_page_full_width(self) -> None:
+        resp = _client.get("/runs", cookies=_admin_cookie())
+        assert "max-w-7xl mx-auto" in resp.text
+        assert "max-w-6xl" not in resp.text
 
     def test_discovery_popup_has_a11y_attributes(self) -> None:
         resp = _client.get("/", cookies=_admin_cookie())
@@ -114,6 +163,16 @@ class TestDashboardPage:
         assert 'scope="col"' in resp.text
         assert "overflow-x-auto" in resp.text
 
+    @pytest.mark.asyncio
+    async def test_table_shows_run_time_column(self, _seeded_runs_db) -> None:
+        from services.run_tracker import run_tracker
+
+        await run_tracker.record("owner/alpha", "1", status="PASSED", platform="github")
+
+        resp = _client.get("/", cookies=_admin_cookie())
+        assert "Run Time" in resp.text
+        assert "Run ID" not in resp.text
+
     def test_unauthenticated_redirects(self) -> None:
         resp = _client.get("/", follow_redirects=False)
         assert resp.status_code == 302
@@ -133,8 +192,9 @@ class TestConfigPage:
     def test_contains_settings_fields(self) -> None:
         resp = _client.get("/config", cookies=_admin_cookie())
         assert "llm_provider" in resp.text
-        assert "mcp_server_command" in resp.text
         assert "messaging_platform" in resp.text
+        assert "telegram_bot_token" in resp.text
+        assert "telegram_chat_id" in resp.text
 
     def test_contains_discovery_fields(self) -> None:
         resp = _client.get("/config", cookies=_admin_cookie())
@@ -203,7 +263,8 @@ class TestRunsPage:
     def test_runs_container_allows_horizontal_scroll(self) -> None:
         resp = _client.get("/runs", cookies=_admin_cookie())
         assert 'id="runs-container"' in resp.text
-        assert "overflow-x-auto" in resp.text
+        assert "overflow-y-auto" in resp.text
+        assert "scrollbar-none" in resp.text
 
     @pytest.mark.asyncio
     async def test_table_headers_have_scope(self, _seeded_runs_db) -> None:
@@ -290,8 +351,68 @@ class TestRunsPageHxFragment:
 
         resp = _client.get("/runs", headers={"HX-Request": "true"}, cookies=_admin_cookie())
         assert resp.status_code == 200
-        assert 'class="overflow-x-auto"' in resp.text
+        assert 'class="overflow-x-auto scrollbar-none"' in resp.text
         assert 'scope="col"' in resp.text
+
+    @pytest.mark.asyncio
+    async def test_fragment_uses_run_time_column_and_drops_patch_summary(self, _isolated_runs_db) -> None:
+        from services.run_tracker import run_tracker
+
+        await run_tracker.record(
+            "owner/alpha",
+            "1",
+            status="FAILED",
+            failure_summary="  build failed\n  at line 5  ",
+        )
+
+        resp = _client.get("/runs", headers={"HX-Request": "true"}, cookies=_admin_cookie())
+        assert resp.status_code == 200
+        assert "Run Time" in resp.text
+        assert "Failure Summary" in resp.text
+        assert "Run ID" not in resp.text
+        assert "Patch Summary" not in resp.text
+
+    @pytest.mark.asyncio
+    async def test_fragment_rows_have_session_compatible_ids(self, _isolated_runs_db) -> None:
+        from services.run_tracker import run_tracker
+
+        await run_tracker.record("owner/alpha", "1", status="PASSED", platform="github")
+        await run_tracker.record("owner/beta", "2", run_attempt="3", status="PASSED", platform="github")
+
+        resp = _client.get("/runs", headers={"HX-Request": "true"}, cookies=_admin_cookie())
+        assert resp.status_code == 200
+        assert 'id="run-owner/alpha:1:1"' in resp.text
+        assert 'id="run-owner/beta:2:3"' in resp.text
+
+    @pytest.mark.asyncio
+    async def test_fragment_failure_summary_fallback_for_failed_runs(self, _isolated_runs_db) -> None:
+        from services.run_tracker import run_tracker
+
+        await run_tracker.record("owner/alpha", "1", status="failure")
+
+        resp = _client.get("/runs", headers={"HX-Request": "true"}, cookies=_admin_cookie())
+        assert resp.status_code == 200
+        assert "Run failed" in resp.text
+
+    @pytest.mark.asyncio
+    async def test_hx_filter_failed_matches_all_aliases(self, _isolated_runs_db) -> None:
+        from services.run_tracker import run_tracker
+
+        await run_tracker.record("owner/alpha", "1", status="FAILED")
+        await run_tracker.record("owner/beta", "2", status="failed")
+        await run_tracker.record("owner/gamma", "3", status="failure")
+        await run_tracker.record("owner/delta", "4", status="error")
+
+        resp = _client.get(
+            "/runs?status=failed",
+            headers={"HX-Request": "true"},
+            cookies=_admin_cookie(),
+        )
+        assert resp.status_code == 200
+        assert "owner/alpha" in resp.text
+        assert "owner/beta" in resp.text
+        assert "owner/gamma" in resp.text
+        assert "owner/delta" not in resp.text
 
 
 class TestA11yCss:
@@ -320,6 +441,79 @@ class TestA11yCss:
     def test_dim_text_light_meets_contrast(self) -> None:
         resp = _client.get("/static/css/styles.css")
         assert "--text-dim: #64748b" in resp.text
+
+
+class TestMotionFoundation:
+    def test_motion_init_js_served(self) -> None:
+        resp = _client.get("/static/js/motion-init.js")
+        assert resp.status_code == 200
+        assert "javascript" in resp.headers["content-type"]
+
+    def test_motion_init_imports_pinned_cdn(self) -> None:
+        resp = _client.get("/static/js/motion-init.js")
+        assert "cdn.jsdelivr.net/npm/motion@11.13.5/+esm" in resp.text
+        assert "@latest" not in resp.text
+
+    def test_motion_init_gates_on_reduced_motion(self) -> None:
+        resp = _client.get("/static/js/motion-init.js")
+        assert "prefers-reduced-motion" in resp.text
+
+    def test_base_includes_module_script(self) -> None:
+        resp = _client.get("/", cookies=_admin_cookie())
+        assert 'type="module" src="/static/js/motion-init.js"' in resp.text
+
+    def test_css_disables_css_animations_when_motion_ready(self) -> None:
+        resp = _client.get("/static/css/styles.css")
+        assert ".motion-ready .status-dot-pulse::after" in resp.text
+        assert ".motion-ready .skeleton" in resp.text
+
+    def test_css_styles_status_dot_ring(self) -> None:
+        resp = _client.get("/static/css/styles.css")
+        assert ".status-dot-ring" in resp.text
+
+
+class TestHxBoostSpaNav:
+    def test_dashboard_body_has_hx_boost(self) -> None:
+        resp = _client.get("/", cookies=_admin_cookie())
+        assert 'hx-boost="true"' in resp.text
+
+    def test_dashboard_inline_script_tagged_page_script(self) -> None:
+        resp = _client.get("/", cookies=_admin_cookie())
+        assert "data-page-script" in resp.text
+
+    def test_app_js_has_shared_init_and_sse_cleanup(self) -> None:
+        resp = _client.get("/static/js/app.js")
+        assert resp.status_code == 200
+        assert "htmx:beforeSwap" in resp.text
+        assert "window.__ciDashboardEs" in resp.text
+        assert "htmx:restored" in resp.text
+        assert 'closest("#theme-toggle")' in resp.text
+
+    def test_app_js_delegates_not_double_binds_theme(self) -> None:
+        resp = _client.get("/static/js/app.js")
+        assert 'document.addEventListener("click"' in resp.text
+
+    def test_motion_init_reruns_on_restored(self) -> None:
+        resp = _client.get("/static/js/motion-init.js")
+        assert "htmx:restored" in resp.text
+
+    def test_login_form_disables_boost(self) -> None:
+        resp = _client.get("/login")
+        assert 'hx-boost="false"' in resp.text
+
+    def test_login_has_no_gradient_logo(self) -> None:
+        resp = _client.get("/login")
+        assert "from-indigo-600" not in resp.text
+        assert "via-indigo-500" not in resp.text
+        assert "to-purple-500" not in resp.text
+
+    def test_login_error_is_announced(self) -> None:
+        resp = _client.post("/login", data={"username": "bad", "password": "bad"})
+        assert 'role="alert"' in resp.text
+
+    def test_header_brand_logo_not_gradient(self) -> None:
+        resp = _client.get("/", cookies=_admin_cookie())
+        assert "from-indigo-600" not in resp.text
 
 
 class TestSettingsAPI:
@@ -353,7 +547,7 @@ class TestSettingsAPI:
         assert resp.status_code == 400
 
     def test_put_filters_unknown_keys(self) -> None:
-        with patch("ui.app.write_env") as mock_write:
+        with patch("ui.app.write_env"):
             resp = _client.put(
                 "/api/settings",
                 content=json.dumps({"openai_model": "gpt-4o", "evil_key": "bad"}),
@@ -457,6 +651,15 @@ class TestSettingsAPI:
 
 
 class TestDashboardPartial:
+    @pytest.fixture
+    def _isolated_runs_db(self, tmp_path):
+        import services.run_tracker as rt
+
+        original = rt._DB_PATH
+        rt._DB_PATH = tmp_path / "ci_runs.db"
+        yield
+        rt._DB_PATH = original
+
     def test_returns_html_table(self) -> None:
         resp = _client.get("/api/dashboard/partial", cookies=_admin_cookie())
         assert resp.status_code == 200
@@ -467,6 +670,18 @@ class TestDashboardPartial:
         resp = _client.get("/api/dashboard/partial", cookies=_admin_cookie())
         assert "stat-processing-jobs" not in resp.text
         assert "hx-swap-oob" not in resp.text
+
+    @pytest.mark.asyncio
+    async def test_rows_have_session_compatible_ids(self, _isolated_runs_db) -> None:
+        from services.run_tracker import run_tracker
+
+        await run_tracker.record("owner/alpha", "1", status="PASSED", platform="github")
+
+        resp = _client.get("/api/dashboard/partial", cookies=_admin_cookie())
+        assert resp.status_code == 200
+        # The id must match the SSE task_key format (repo:run_id:run_attempt) so
+        # session-bound bot updates swap the trigger row instead of duplicating it.
+        assert 'id="run-owner/alpha:1:1"' in resp.text
 
 
 class TestMetricsPartial:
@@ -503,21 +718,31 @@ class TestConnectionTestEndpoints:
         assert data["ok"] is False
         assert "token or base URL" in data["detail"]
 
-    @patch("asyncio.create_subprocess_exec", new_callable=AsyncMock)
-    def test_mcp_binary_not_found(self, mock_exec: object) -> None:
-        mock_exec.side_effect = FileNotFoundError("not found")
-        resp = _client.post("/api/test/mcp", cookies=_admin_cookie())
-        assert resp.status_code == 502
+    @patch("ui.app.send_alert", new_callable=AsyncMock)
+    def test_messaging_unconfigured_returns_400(self, mock_send: object) -> None:
+        mock_send.side_effect = ValueError("mattermost webhook URL not configured")
+        resp = _client.post("/api/test/messaging", cookies=_admin_cookie())
+        assert resp.status_code == 400
         data = resp.json()
-        assert "Binary not found" in data["detail"]
+        assert data["ok"] is False
+        assert "not configured" in data["detail"]
 
-    @patch("asyncio.create_subprocess_exec", new_callable=AsyncMock)
-    def test_messaging_binary_not_found(self, mock_exec: object) -> None:
-        mock_exec.side_effect = FileNotFoundError("not found")
+    @patch("ui.app.send_alert", new_callable=AsyncMock)
+    def test_messaging_send_failure_returns_502(self, mock_send: object) -> None:
+        mock_send.side_effect = RuntimeError("boom")
         resp = _client.post("/api/test/messaging", cookies=_admin_cookie())
         assert resp.status_code == 502
         data = resp.json()
-        assert "Binary not found" in data["detail"]
+        assert data["ok"] is False
+
+    @patch("ui.app.send_alert", new_callable=AsyncMock)
+    def test_messaging_success(self, mock_send: object) -> None:
+        mock_send.return_value = "Alert sent via mattermost"
+        resp = _client.post("/api/test/messaging", cookies=_admin_cookie())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        mock_send.assert_awaited_once()
 
     def test_viewer_cannot_trigger_test(self) -> None:
         resp = _client.post("/api/test/github", cookies=_viewer_cookie())
@@ -623,6 +848,30 @@ class TestReposAPI:
         assert data["status"] == "error"
         assert "boom" in data["detail"]
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("flag", "expected"),
+        [("true", True), ("false", False)],
+    )
+    async def test_reports_disable_popup_flag(self, _isolated_runs_db, flag, expected) -> None:
+        with (
+            patch("services.repo_discovery.discover_repos", new_callable=AsyncMock) as mock,
+            patch("services.repo_discovery.is_discovery_configured", return_value=False),
+            patch.object(settings, "disable_auto_discovery_popup", flag),
+        ):
+            mock.side_effect = [
+                {
+                    "status": "not_configured",
+                    "repos": [],
+                    "detail": "No Forgejo token configured.",
+                    "configured": False,
+                },
+                {"status": "not_configured", "repos": [], "detail": "No GitHub token configured.", "configured": False},
+            ]
+            resp = _client.get("/api/repos", cookies=_admin_cookie())
+
+        assert resp.json()["disable_popup"] is expected
+
 
 class TestDiscoveryDismiss:
     def test_dismiss_sets_configured_flag(self) -> None:
@@ -635,6 +884,17 @@ class TestDiscoveryDismiss:
     def test_dismiss_requires_admin(self) -> None:
         resp = _client.post("/api/discovery/dismiss", cookies=_viewer_cookie())
         assert resp.status_code == 403
+
+    def test_dismiss_with_never_again_checkbox_persists_flag(self) -> None:
+        with patch("ui.app.write_env") as mock_write:
+            resp = _client.post(
+                "/api/discovery/dismiss",
+                data={"disable_auto_discovery_popup": "on"},
+                cookies=_admin_cookie(),
+            )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        mock_write.assert_called_once_with({"discovery_configured": "true", "disable_auto_discovery_popup": "true"})
 
 
 class TestWebhookHealthEndpoint:

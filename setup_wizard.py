@@ -21,15 +21,16 @@ _PROMPTS: list[tuple[str, str, bool]] = [
     ("FORGEJO_TOKEN", "Forgejo access token", False),
     ("FORGEJO_BASE_URL", "Forgejo base URL", True),
     ("", "", False),
-    ("MESSAGING_PLATFORM", "Messaging platform (mattermost/slack/discord)", True),
+    ("MESSAGING_PLATFORM", "Messaging platform (mattermost/slack/discord/telegram)", True),
     ("MATTERMOST_WEBHOOK_URL", "Mattermost webhook URL", False),
     ("SLACK_WEBHOOK_URL", "Slack webhook URL", False),
     ("DISCORD_WEBHOOK_URL", "Discord webhook URL", False),
+    ("TELEGRAM_BOT_TOKEN", "Telegram bot token", False),
+    ("TELEGRAM_CHAT_ID", "Telegram chat ID", False),
     ("", "", False),
     ("FORGEJO_WEBHOOK_SECRET", "Forgejo webhook secret", False),
     ("GITHUB_WEBHOOK_SECRET", "GitHub webhook secret", False),
     ("", "", False),
-    ("MCP_SERVER_COMMAND", "Path to MCP server binary", True),
     ("GIT_REPO_PATH", "Git repository path", True),
 ]
 
@@ -39,7 +40,6 @@ _DEFAULTS: dict[str, str] = {
     "ANTHROPIC_MODEL": "claude-sonnet-4-20250514",
     "FORGEJO_BASE_URL": "https://forgejo.example.com",
     "MESSAGING_PLATFORM": "mattermost",
-    "MCP_SERVER_COMMAND": "./universal-messaging-mcp",
     "GIT_REPO_PATH": ".",
 }
 
@@ -84,10 +84,7 @@ def _write_env(values: dict[str, str]) -> None:
 
 
 def _is_secret(key: str) -> bool:
-    return any(
-        tag in key.upper()
-        for tag in ("TOKEN", "KEY", "SECRET", "PASSWORD", "WEBHOOK_URL")
-    )
+    return any(tag in key.upper() for tag in ("TOKEN", "KEY", "SECRET", "PASSWORD", "WEBHOOK_URL"))
 
 
 def run_wizard() -> None:
@@ -137,9 +134,8 @@ def run_wizard() -> None:
     print(f"  Config written to: {_ENV_PATH}")
     print()
     print("  Next steps:")
-    print("    1. Build the MCP server:  cd messaging-mcp && go build")
-    print("    2. Start the agent:       ci-agent serve")
-    print("    3. Open the dashboard:    http://127.0.0.1:8000")
+    print("    1. Start the agent:       ci-agent serve")
+    print("    2. Open the dashboard:    http://127.0.0.1:8000")
     print("=" * 60)
 
 

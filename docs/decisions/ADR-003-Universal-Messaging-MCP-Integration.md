@@ -1,7 +1,15 @@
 # ADR-003: Model Context Protocol (MCP) for Universal Messaging Integration
 
 ## Status
-Accepted
+**Superseded by ADR-006** — see note below.
+
+> **Superseded (2026-08-02):** The MCP messaging subprocess was removed in favor of
+> in-process notification delivery ([ADR-006](ADR-006-In-Process-Messaging-Notifications.md),
+> implemented in `services/messaging/`). `services/mcp_client.py`, `mcp_servers/`,
+> the `mcp` dependency, and the `/api/test/mcp` endpoint were deleted. Notifications are now
+> sent directly via `httpx` with a `notification_trigger_level` gate
+> (`always` / `failures_only` / `success_only` / `never`), and Telegram was added as a channel.
+> The original rationale is retained below for historical context.
 
 ## Date
 2026-07-26

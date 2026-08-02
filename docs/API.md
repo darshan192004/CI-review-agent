@@ -107,10 +107,5 @@ Pings local Ollama endpoint (`/api/tags`) and returns installed models.
 
 ---
 
-### `POST /api/test/mcp`
-Pings the Go Universal Messaging MCP server over stdio JSON-RPC transport.
-
----
-
 ### `POST /api/test/messaging`
-Sends a test alert to the configured messaging platform (Mattermost / Slack / Discord).
+Sends a test alert in-process to the configured messaging platform (Mattermost / Slack / Discord / Telegram).

@@ -44,8 +44,9 @@ The **CI Review Agent** is an autonomous, self-healing CI/CD agent designed to a
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
-│             Universal Messaging MCP Server                  │
-│       (Mattermost / Slack / Discord Notifications)          │
+│          In-process Messaging (services/messaging/)          │
+│   (Mattermost / Slack / Discord / Telegram Notifications)    │
+│           gated by notification_trigger_level                │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -65,11 +66,11 @@ The **CI Review Agent** is an autonomous, self-healing CI/CD agent designed to a
   2. `analyze_failure`: Sends logs and source files to the configured LLM (OpenAI, Anthropic, Ollama, Azure OpenAI) to diagnose root cause and generate a patch diff.
   3. `apply_fix`: Validates and applies the patch diff using git tools.
   4. `verify_ci`: Commits fix, pushes branch, and polls CI runner to verify if tests pass.
-  5. `send_notification`: Uses MCP tool call to post alert summary.
+  5. `send_notification`: Posts alert summary to the configured messaging channel in-process.
 
-### 3. Universal Messaging MCP Server (`services/mcp_client.py`)
-* Communicates with Go-based MCP server via stdio JSON-RPC transport.
-* Sends structured incident reports, patch summaries, and escalation alerts to Mattermost, Slack, or Discord.
+### 3. In-process Messaging (`services/messaging/`)
+* Sends structured incident reports, patch summaries, and escalation alerts to Mattermost, Slack, or Discord webhooks, plus Telegram bots.
+* Notification delivery is gated by `notification_trigger_level` (`always` / `failures_only` / `success_only` / `never`).
 
 ### 4. Configuration & State Persistence (`config.py`, `services/env_writer.py`)
 * Settings load from `.env` file via `pydantic_settings`.

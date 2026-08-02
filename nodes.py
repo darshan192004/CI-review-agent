@@ -12,7 +12,7 @@ from config import settings
 from services.ci_client import CIClient, create_ci_client
 from services.commit_message import build_commit_message, derive_scope, derive_summary
 from services.git_manager import GitError, WorkspaceGitManager
-from services.mcp_client import MCPClient
+from services.messaging import notification_allowed, send_alert
 from services.rate_limiter import invoke_with_llm_rate_limit
 from state import AgentState, FileFix, RepairAnalysis
 
@@ -130,17 +130,6 @@ def _build_ci_client(state: AgentState) -> CIClient:
     if platform == "github":
         return create_ci_client("github", settings.github_token, "")
     return create_ci_client("forgejo", settings.forgejo_token, settings.forgejo_base_url)
-
-
-def _build_mcp_client() -> MCPClient | None:
-    if not settings.mcp_server_command:
-        logger.warning("MCP server command not configured; notifications disabled")
-        return None
-    return MCPClient(
-        command=settings.mcp_server_command,
-        args=settings.mcp_server_args,
-        env=settings.mcp_server_env_with_webhooks or None,
-    )
 
 
 def _extract_failure_summary(logs: str) -> str:
@@ -305,7 +294,6 @@ async def node_clone_repository(state: AgentState) -> dict[str, Any]:
 async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
     logger.info("Fetching CI logs for run %s", state.get("run_id"))
     ci_client = _build_ci_client(state)
-    mcp_client = _build_mcp_client()
 
     repo = state.get("repository", "")
     parts = repo.split("/")
@@ -430,14 +418,13 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
             head_sha,
         )
 
-    if mcp_client:
+    if notification_allowed(settings.notification_trigger_level, "failure"):
         try:
-            await mcp_client.connect()
-            alert_payload = {
-                "platform": settings.messaging_platform,
-                "incident_title": f"CI Failed: {repo} (branch: {head_branch})",
-                "root_cause": failure_summary or "Unknown failure",
-                "resolution_steps": (
+            await send_alert(
+                platform=settings.messaging_platform,
+                incident_title=f"CI Failed: {repo} (branch: {head_branch})",
+                root_cause=failure_summary or "Unknown failure",
+                resolution_steps=(
                     f"Automated fix attempt "
                     f"{state.get('attempt_count', 1)}/{settings.max_retry_attempts}"
                     " in progress.\n"
@@ -447,12 +434,9 @@ async def node_fetch_logs_and_alert(state: AgentState) -> dict[str, Any]:
                     f"Author: {author}\n"
                     f"Run ID: {run_id}"
                 ),
-            }
-            await mcp_client.send_alert(alert_payload)
+            )
         except Exception as e:
-            logger.error("MCP alert failed (non-fatal): %s", e)
-        finally:
-            await mcp_client.disconnect()
+            logger.error("Initial alert failed (non-fatal): %s", e)
 
     await ci_client.close()
     return {
@@ -807,27 +791,21 @@ Analyze the failure and provide a fix as JSON."""
 async def node_notify_success(state: AgentState) -> dict[str, Any]:
     attempt = state.get("attempt_count", 1)
     logger.info("CI PASSED after %d attempt(s)", attempt)
-    mcp_client = _build_mcp_client()
 
-    try:
-        if mcp_client:
-            await mcp_client.connect()
-            alert_payload = {
-                "platform": settings.messaging_platform,
-                "incident_title": f"CI Fixed: {state.get('repository', 'unknown')}",
-                "root_cause": state.get("failure_summary", "Previously failing CI"),
-                "resolution_steps": (
+    if notification_allowed(settings.notification_trigger_level, "success"):
+        try:
+            await send_alert(
+                platform=settings.messaging_platform,
+                incident_title=f"CI Fixed: {state.get('repository', 'unknown')}",
+                root_cause=state.get("failure_summary", "Previously failing CI"),
+                resolution_steps=(
                     f"Automated fix applied successfully after {attempt} attempt(s).\n"
                     f"Commit: {state.get('commit_sha', 'N/A')}\n"
                     f"Explanation:\n{state.get('explanation', 'N/A')[:500]}"
                 ),
-            }
-            await mcp_client.send_alert(alert_payload)
-    except Exception as e:
-        logger.error("Success notification failed: %s", e)
-    finally:
-        if mcp_client:
-            await mcp_client.disconnect()
+            )
+        except Exception as e:
+            logger.error("Success notification failed: %s", e)
 
     return {"notifications_sent": [f"Success notification sent. CI passed after {attempt} attempt(s)"]}
 
@@ -835,16 +813,14 @@ async def node_notify_success(state: AgentState) -> dict[str, Any]:
 async def node_notify_human_escalation(state: AgentState) -> dict[str, Any]:
     attempt = state.get("attempt_count", 0)
     logger.warning("Escalating to human after %d failed attempts", attempt)
-    mcp_client = _build_mcp_client()
 
-    try:
-        if mcp_client:
-            await mcp_client.connect()
-            alert_payload = {
-                "platform": settings.messaging_platform,
-                "incident_title": (f"ESCALATION: CI Fix Failed ({state.get('repository', 'unknown')})"),
-                "root_cause": (state.get("llm_analysis", "Automated analysis could not resolve the issue")),
-                "resolution_steps": (
+    if notification_allowed(settings.notification_trigger_level, "escalation"):
+        try:
+            await send_alert(
+                platform=settings.messaging_platform,
+                incident_title=(f"ESCALATION: CI Fix Failed ({state.get('repository', 'unknown')})"),
+                root_cause=(state.get("llm_analysis", "Automated analysis could not resolve the issue")),
+                resolution_steps=(
                     f"Automated fix failed after {attempt} attempts. Human intervention required.\n"
                     f"Repository: {state.get('repository', 'N/A')}\n"
                     f"Branch: {state.get('branch', 'N/A')}\n"
@@ -852,12 +828,8 @@ async def node_notify_human_escalation(state: AgentState) -> dict[str, Any]:
                     f"Final error:\n{state.get('failed_logs', 'N/A')[:1000]}\n\n"
                     f"LLM proposed fix:\n{state.get('explanation', 'N/A')[:500]}"
                 ),
-            }
-            await mcp_client.send_alert(alert_payload)
-    except Exception as e:
-        logger.error("Escalation notification failed: %s", e)
-    finally:
-        if mcp_client:
-            await mcp_client.disconnect()
+            )
+        except Exception as e:
+            logger.error("Escalation notification failed: %s", e)
 
     return {"notifications_sent": [f"Escalation alert sent after {attempt} failed attempts"]}

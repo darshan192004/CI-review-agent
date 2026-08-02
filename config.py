@@ -1,11 +1,6 @@
 from __future__ import annotations
 
-import logging
-from pathlib import Path
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -20,18 +15,15 @@ class Settings(BaseSettings):
     forgejo_token: str = ""
     forgejo_base_url: str = "https://forgejo.example.com"
 
-    # Messaging platform (mattermost | slack | discord)
+    # Messaging platform (mattermost | slack | discord | telegram)
     messaging_platform: str = "mattermost"
 
-    # MCP Server (Go binary)
-    mcp_server_command: str = "./universal-messaging-mcp"
-    mcp_server_args: list[str] = ["-transport", "stdio"]
-    mcp_server_env: dict[str, str] | None = None
-
-    # Webhook URLs (passed to MCP server subprocess)
+    # Webhook URLs / credentials for alert channels
     mattermost_webhook_url: str = ""
     slack_webhook_url: str = ""
     discord_webhook_url: str = ""
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
 
     # LLM — Tier 1 (fully tested)
     openai_api_key: str = ""
@@ -100,6 +92,8 @@ class Settings(BaseSettings):
     github_username: str = ""
     # First-run flag: set to "true" once the admin explicitly configures discovery
     discovery_configured: str = "false"
+    # Admin opted out of the auto-discovery popup permanently ("true" bypasses it)
+    disable_auto_discovery_popup: str = "false"
 
     # Server
     server_host: str = "0.0.0.0"
@@ -124,30 +118,6 @@ class Settings(BaseSettings):
     admin_password: str = ""
     viewer_username: str = ""
     viewer_password: str = ""
-
-    @property
-    def mcp_server_env_with_webhooks(self) -> dict[str, str]:
-        env: dict[str, str] = {}
-        if self.mattermost_webhook_url:
-            env["MATTERMOST_WEBHOOK_URL"] = self.mattermost_webhook_url
-        if self.slack_webhook_url:
-            env["SLACK_WEBHOOK_URL"] = self.slack_webhook_url
-        if self.discord_webhook_url:
-            env["DISCORD_WEBHOOK_URL"] = self.discord_webhook_url
-        if self.mcp_server_env:
-            env.update(self.mcp_server_env)
-        return env
-
-    def model_post_init(self, _context: object) -> None:
-        if self.mcp_server_command:
-            cmd_path = Path(self.mcp_server_command)
-            if not cmd_path.is_file():
-                logger.warning(
-                    "MCP server binary not found at '%s'. "
-                    "Ping MCP and Send Test Alert will fail. "
-                    "Set MCP_SERVER_COMMAND in .env to the correct absolute path.",
-                    self.mcp_server_command,
-                )
 
 
 settings = Settings()

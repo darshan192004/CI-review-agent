@@ -430,14 +430,14 @@
         <p class="text-[10px] ci-text-dim">Changes to host and port require a restart of the agent to take effect.</p>
       </div>
 
-      <!-- 4. Universal Messaging & Webhook Alerts -->
+      <!-- 4. Messaging & Webhook Alerts -->
       <div class="glass-panel p-6 config-section space-y-5">
         <div class="flex items-center gap-3">
           <div class="p-2.5 rounded-lg bg-purple-500/10 text-purple-400 border border-purple-500/20">
             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
           </div>
           <div>
-            <h3 class="font-semibold text-lg">MCP Messaging & Webhooks</h3>
+            <h3 class="font-semibold text-lg">Messaging & Webhook Alerts</h3>
             <p class="text-xs ci-text-muted">Configure alert channels and notification trigger filters</p>
           </div>
         </div>
@@ -454,16 +454,12 @@
           </div>
 
           <div>
-            <label class="block text-xs font-semibold ci-text-main uppercase tracking-wider mb-1.5">MCP Server Executable Command</label>
-            <input type="text" name="mcp_server_command" value="{{ settings.mcp_server_command }}" class="input-field font-mono text-xs">
-          </div>
-
-          <div>
             <label class="block text-xs font-semibold ci-text-main uppercase tracking-wider mb-1.5">Messaging Platform Transport</label>
             <select name="messaging_platform" class="select-field">
               <option value="mattermost" {% if settings.messaging_platform == 'mattermost' %}selected{% endif %}>Mattermost</option>
               <option value="slack" {% if settings.messaging_platform == 'slack' %}selected{% endif %}>Slack</option>
               <option value="discord" {% if settings.messaging_platform == 'discord' %}selected{% endif %}>Discord</option>
+              <option value="telegram" {% if settings.messaging_platform == 'telegram' %}selected{% endif %}>Telegram</option>
             </select>
           </div>
 
@@ -497,11 +493,24 @@
             </div>
           </div>
 
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-semibold ci-text-main uppercase tracking-wider mb-1.5">Telegram Bot Token</label>
+              <div class="secret-wrapper">
+                <input type="password" id="telegram_bot_token" name="telegram_bot_token" value="{{ settings.telegram_bot_token }}" placeholder="123456:ABC-DEF..." class="input-field font-mono text-xs">
+                <button type="button" onclick="toggleSecret('telegram_bot_token', this)" class="secret-toggle">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                </button>
+              </div>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold ci-text-main uppercase tracking-wider mb-1.5">Telegram Chat ID</label>
+              <input type="text" name="telegram_chat_id" value="{{ settings.telegram_chat_id }}" placeholder="@channel or 123456789" class="input-field font-mono text-xs">
+            </div>
+          </div>
+
           <div class="pt-2 flex items-center justify-between ci-border-top">
-            <button type="button" hx-post="/api/test/mcp" hx-swap="none" class="btn-secondary text-xs">
-              <span class="htmx-indicator spinner"></span>
-              Ping MCP Transport
-            </button>
+            <span class="text-[10px] ci-text-dim">Test alert sends to the platform selected above</span>
             <button type="button" hx-post="/api/test/messaging" hx-swap="none" class="btn-secondary text-xs">
               <span class="htmx-indicator spinner"></span>
               Send Test Alert

@@ -1,5 +1,11 @@
 # Production-Ready UI & Universal Messaging MCP
 
+> **Superseded (2026-08-02):** The UI/UX refactor (Parts 0–3) is implemented, and Slice 7 of
+> this plan (messaging via a stdio MCP server) was replaced by in-process notification
+> delivery (`services/messaging/`) — see
+> [ADR-006](file:///E:/Ci-review-agent/docs/decisions/ADR-006-In-Process-Messaging-Notifications.md).
+> Retained as historical context.
+
 ## Problem Statement
 
 How might we take a working CI self-healing backend and turn its browser surface into

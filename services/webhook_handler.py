@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import traceback
+from typing import Any
 
 from config import settings
 from main import run_agent
@@ -41,6 +42,45 @@ def _bot_terminal_status(event: WebhookEvent) -> str | None:
             return "failure"
         return None
     return None
+
+
+async def _update_session_run(
+    repository: str,
+    session: dict[str, Any],
+    status: str,
+    *,
+    branch: str = "",
+    commit_sha: str = "",
+    author: str = "",
+) -> tuple[str, str] | None:
+    """Advance a session's lifecycle ci_run row to ``status`` in place.
+
+    Bot re-runs carry a fresh run_id; updating the session-bound row instead of
+    recording a new one keeps the dashboard on a single row per lifecycle.
+    Returns the (run_id, run_attempt) that were updated so callers can build a
+    task_key/meta that matches the existing SSE row, or None when no row is
+    bound to the session yet.
+    """
+    row = await run_tracker.get_run_by_session(repository, session["id"])
+    if row is None:
+        logger.warning(
+            "No ci_run bound to session %d for %s — cannot update to %s",
+            session["id"],
+            repository,
+            status,
+        )
+        return None
+    await run_tracker.update_status(
+        repository,
+        row["run_id"],
+        status=status,
+        run_attempt=row["run_attempt"],
+        session_id=session["id"],
+        branch=branch,
+        commit_sha=commit_sha,
+        author=author,
+    )
+    return row["run_id"], row["run_attempt"]
 
 
 async def handle_webhook_event(event: WebhookEvent) -> None:
@@ -150,11 +190,10 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
                     session["id"],
                     status="PASSED",
                 )
-                await run_tracker.record(
+                await _update_session_run(
                     repository,
-                    run_id,
-                    status="PASSED",
-                    platform=event.platform.value,
+                    session,
+                    "PASSED",
                     branch=event.branch or event.repository.default_branch,
                     commit_sha=event.commit_sha,
                     author=event.author,
@@ -174,24 +213,27 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
                         session["id"],
                         status="EXHAUSTED",
                     )
-                    await run_tracker.record(
+                    updated = await _update_session_run(
                         repository,
-                        run_id,
-                        status="EXHAUSTED",
-                        platform=event.platform.value,
+                        session,
+                        "EXHAUSTED",
                         branch=event.branch or event.repository.default_branch,
                         commit_sha=event.commit_sha,
                         author=event.author,
                     )
-                    broadcast_event(
-                        task_key=f"{repository}:{session['trigger_run_id']}:{run_attempt}",
-                        status="EXHAUSTED",
-                        meta={
-                            "repository": repository,
-                            "run_id": session["trigger_run_id"],
-                            "exhausted_at": session["attempt_count"],
-                        },
-                    )
+                    if updated:
+                        run_id, run_attempt = updated
+                        broadcast_event(
+                            task_key=f"{repository}:{run_id}:{run_attempt}",
+                            status="EXHAUSTED",
+                            meta={
+                                "repository": repository,
+                                "run_id": run_id,
+                                "run_attempt": run_attempt,
+                                "session_id": session["id"],
+                                "exhausted_at": session["attempt_count"],
+                            },
+                        )
                     return
                 # Continue to agent invocation below with session context
                 logger.info(
@@ -204,16 +246,37 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
             else:
                 # Bot RUNNING/PENDING/QUEUED or a non-terminal workflow_run
                 # status (e.g. status="completed" with no matching conclusion
-                # mapping) — just record and wait
-                await run_tracker.record(
+                # mapping) — advance the lifecycle row and surface a live update
+                logger.info(
+                    "Bot non-terminal event for %s — marking session %d row %s",
                     repository,
-                    run_id,
-                    status=event_status,
-                    platform=event.platform.value,
+                    session["id"],
+                    event_status,
+                )
+                updated = await _update_session_run(
+                    repository,
+                    session,
+                    event_status,
                     branch=event.branch or event.repository.default_branch,
                     commit_sha=event.commit_sha,
                     author=event.author,
                 )
+                if updated:
+                    run_id, run_attempt = updated
+                    broadcast_event(
+                        task_key=f"{repository}:{run_id}:{run_attempt}",
+                        status=event_status,
+                        meta={
+                            "repository": repository,
+                            "run_id": run_id,
+                            "run_attempt": run_attempt,
+                            "session_id": session["id"],
+                            "platform": event.platform.value,
+                            "branch": event.branch or event.repository.default_branch,
+                            "commit_sha": event.commit_sha,
+                            "author": event.author,
+                        },
+                    )
                 return
         else:
             logger.info(
@@ -230,8 +293,34 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
                 branch=event.branch or event.repository.default_branch,
                 commit_sha=event.commit_sha,
                 author=event.author,
+                created_at=event.created_at,
+            )
+            broadcast_event(
+                task_key=f"{repository}:{run_id}:{run_attempt}",
+                status="skipped_bot",
+                meta={
+                    "repository": repository,
+                    "run_id": run_id,
+                    "run_attempt": run_attempt,
+                    "platform": event.platform.value,
+                    "branch": event.branch or event.repository.default_branch,
+                    "commit_sha": event.commit_sha,
+                    "author": event.author,
+                },
             )
             return
+
+    # A resolved bot session means this webhook is a retry of an existing
+    # lifecycle: the failing run row is the session-bound trigger row, not a
+    # fresh row keyed by the bot's new run_id. Resolve the target row up front
+    # so every subsequent status update lands on the same row.
+    if session is not None:
+        lifecycle_row = await run_tracker.get_run_by_session(repository, session["id"])
+        target_run_id = (lifecycle_row or {}).get("run_id") or session["trigger_run_id"]
+        target_run_attempt = (lifecycle_row or {}).get("run_attempt") or "1"
+    else:
+        target_run_id = run_id
+        target_run_attempt = run_attempt
 
     # Detect rerun: run already completed, webhook is for a new attempt
     is_rerun = await run_tracker.is_completed(repository, run_id, run_attempt)
@@ -258,6 +347,7 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
                 branch=event.branch or event.repository.default_branch,
                 commit_sha=event.commit_sha,
                 author=event.author,
+                created_at=event.created_at,
             )
             # Broadcast the status update
             broadcast_event(
@@ -275,16 +365,29 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
             )
             return
 
-    await run_tracker.record(
-        repository,
-        run_id,
-        run_attempt=run_attempt,
-        status=event_status,
-        platform=event.platform.value,
-        branch=event.branch or event.repository.default_branch,
-        commit_sha=event.commit_sha,
-        author=event.author,
-    )
+    if session is not None:
+        await run_tracker.update_status(
+            repository,
+            target_run_id,
+            status=event_status,
+            run_attempt=target_run_attempt,
+            session_id=session["id"],
+            branch=event.branch or event.repository.default_branch,
+            commit_sha=event.commit_sha,
+            author=event.author,
+        )
+    else:
+        await run_tracker.record(
+            repository,
+            run_id,
+            run_attempt=run_attempt,
+            status=event_status,
+            platform=event.platform.value,
+            branch=event.branch or event.repository.default_branch,
+            commit_sha=event.commit_sha,
+            author=event.author,
+            created_at=event.created_at,
+        )
 
     # Only invoke the agent on actual CI failures
     # Forgejo action payloads: action field is the status (failure/success)
@@ -365,23 +468,25 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
 
     await run_tracker.update_status(
         repository,
-        run_id,
+        target_run_id,
         status="AGENT_WORKING",
-        run_attempt=run_attempt,
+        run_attempt=target_run_attempt,
         attempt_count=0,
+        session_id=session["id"] if session else None,
         branch=event.branch or event.repository.default_branch,
         commit_sha=event.commit_sha,
         author=event.author,
     )
 
-    task_key = f"{repository}:{run_id}:{run_attempt}"
+    task_key = f"{repository}:{target_run_id}:{target_run_attempt}"
     broadcast_event(
         task_key=task_key,
         status="AGENT_WORKING",
         meta={
             "repository": repository,
-            "run_id": run_id,
-            "run_attempt": run_attempt,
+            "run_id": target_run_id,
+            "run_attempt": target_run_attempt,
+            "session_id": session["id"] if session else None,
             "platform": event.platform.value,
             "branch": event.branch or event.repository.default_branch,
             "commit_sha": event.commit_sha,
@@ -408,9 +513,10 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
         )
         await run_tracker.update_status(
             repository,
-            run_id,
-            run_attempt=run_attempt,
+            target_run_id,
+            run_attempt=target_run_attempt,
             status=final_status,
+            session_id=session["id"] if session else None,
             branch=result.get("branch", initial_state.get("branch", "")),
             commit_sha=result.get("commit_sha", initial_state.get("commit_sha", "")),
             author=result.get("ci_author", event.author),
@@ -438,8 +544,9 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
             status=final_status,
             meta={
                 "repository": repository,
-                "run_id": run_id,
-                "run_attempt": run_attempt,
+                "run_id": target_run_id,
+                "run_attempt": target_run_attempt,
+                "session_id": session["id"] if session else None,
                 "platform": event.platform.value,
                 "branch": result.get("branch", initial_state.get("branch", "")),
                 "commit_sha": result.get("commit_sha", initial_state.get("commit_sha", "")),
@@ -457,14 +564,21 @@ async def handle_webhook_event(event: WebhookEvent) -> None:
         )
     except Exception as e:
         logger.error("Agent failed for %s run %s: %s\n%s", repository, run_id, e, traceback.format_exc())
-        await run_tracker.update_status(repository, run_id, status="error", run_attempt=run_attempt)
+        await run_tracker.update_status(
+            repository,
+            target_run_id,
+            status="error",
+            run_attempt=target_run_attempt,
+            session_id=session["id"] if session else None,
+        )
         broadcast_event(
             task_key=task_key,
             status="error",
             meta={
                 "repository": repository,
-                "run_id": run_id,
-                "run_attempt": run_attempt,
+                "run_id": target_run_id,
+                "run_attempt": target_run_attempt,
+                "session_id": session["id"] if session else None,
                 "platform": event.platform.value,
                 "branch": event.branch or event.repository.default_branch,
                 "commit_sha": event.commit_sha,

@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
+
+import pytest
 
 from services.webhook_models import (
     CIPlatform,
-    WebhookEvent,
     parse_forgejo_payload,
     parse_github_workflow_run,
+    parse_iso_timestamp,
     parse_webhook_payload,
 )
-
 
 FORGEJO_PAYLOAD: dict = {
     "action": "completed",
@@ -87,6 +86,18 @@ class TestParseForgejoPayload:
         event = parse_forgejo_payload(payload)
         assert event.status == "completed"
 
+    def test_created_at_parsed_from_workflow(self) -> None:
+        payload = {
+            **FORGEJO_PAYLOAD,
+            "workflow": {**FORGEJO_PAYLOAD["workflow"], "created_at": "2024-05-01T10:30:00Z"},
+        }
+        event = parse_forgejo_payload(payload)
+        assert event.created_at == pytest.approx(1714559400.0)
+
+    def test_created_at_defaults_none(self) -> None:
+        event = parse_forgejo_payload(FORGEJO_PAYLOAD)
+        assert event.created_at is None
+
 
 class TestParseGithubPayload:
     def test_basic_parse(self) -> None:
@@ -109,6 +120,42 @@ class TestParseGithubPayload:
         event = parse_github_workflow_run(payload)
         assert event.run_id == ""
         assert event.branch == ""
+
+    def test_created_at_parsed_from_workflow_run(self) -> None:
+        payload = {
+            **GITHUB_PAYLOAD,
+            "workflow_run": {
+                **GITHUB_PAYLOAD["workflow_run"],
+                "created_at": "2024-05-01T10:30:00Z",
+            },
+        }
+        event = parse_github_workflow_run(payload)
+        assert event.created_at == pytest.approx(1714559400.0)
+
+    def test_created_at_defaults_none(self) -> None:
+        event = parse_github_workflow_run(GITHUB_PAYLOAD)
+        assert event.created_at is None
+
+
+class TestParseIsoTimestamp:
+    def test_iso_zulu(self) -> None:
+        assert parse_iso_timestamp("2024-05-01T10:30:00Z") == pytest.approx(1714559400.0)
+
+    def test_iso_offset(self) -> None:
+        assert parse_iso_timestamp("2024-05-01T12:30:00+02:00") == pytest.approx(1714559400.0)
+
+    def test_epoch_seconds(self) -> None:
+        assert parse_iso_timestamp(1714559400) == 1714559400.0
+
+    def test_epoch_milliseconds(self) -> None:
+        assert parse_iso_timestamp(1714559400123) == pytest.approx(1714559400.123)
+
+    def test_invalid_returns_none(self) -> None:
+        assert parse_iso_timestamp("not-a-date") is None
+
+    def test_empty_and_none_return_none(self) -> None:
+        assert parse_iso_timestamp(None) is None
+        assert parse_iso_timestamp("") is None
 
 
 class TestParseWebhookPayload:
@@ -221,3 +268,11 @@ class TestParseForgejoActionPayload:
         event = parse_webhook_payload(CIPlatform.FORGEJO, FORGEJO_ACTION_PAYLOAD)
         assert event.commit_author == ""
         assert event.commit_author_email == ""
+
+    def test_created_at_parsed_from_action_run(self) -> None:
+        payload = {
+            **FORGEJO_ACTION_PAYLOAD,
+            "run": {**FORGEJO_ACTION_PAYLOAD["run"], "created_at": "2024-05-01T10:30:00Z"},
+        }
+        event = parse_webhook_payload(CIPlatform.FORGEJO, payload)
+        assert event.created_at == pytest.approx(1714559400.0)

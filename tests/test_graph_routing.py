@@ -1,3 +1,8 @@
+from unittest.mock import patch
+
+import pytest
+
+from config import settings
 from graph import build_graph, route_clone_outcome, route_fix_outcome
 from nodes import _detect_infrastructure_error, _parse_repair_analysis
 
@@ -131,6 +136,11 @@ class TestParseRepairAnalysis:
 
 
 class TestRouteFixOutcome:
+    @pytest.fixture(autouse=True)
+    def _pin_max_retry_attempts(self):
+        with patch.object(settings, "max_retry_attempts", 3):
+            yield
+
     def test_fix_outcome_for_passed(self):
         # PASSED (LLM found nothing to change) terminates the single-pass
         # graph; the external webhook loop owns any follow-up.

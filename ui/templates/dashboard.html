@@ -18,7 +18,7 @@ endblock %} {% block content %}
         width: 0;
     }
 </style>
-<div class="space-y-8 max-w-6xl mx-auto">
+<div class="space-y-8 max-w-7xl mx-auto">
     <!-- Header -->
     <div
         class="flex flex-col sm:flex-row sm:items-center justify-between gap-4"
@@ -115,6 +115,17 @@ endblock %} {% block content %}
                 The agent auto-connects to CI repos the way WiFi connects to a
                 network in range. Choose how it discovers repositories to monitor.
             </p>
+            <label
+                for="discovery-never-again"
+                class="flex items-center gap-2 mt-5 text-sm text-slate-400 cursor-pointer select-none"
+            >
+                <input
+                    type="checkbox"
+                    id="discovery-never-again"
+                    class="w-4 h-4 rounded ci-border"
+                />
+                Never show this again
+            </label>
             <div class="mt-6 flex gap-3 justify-end">
                 <button
                     id="discovery-auto"
@@ -281,34 +292,16 @@ endblock %} {% block content %}
             </div>
         </div>
 
-        <!-- Initial state container — one-shot HTMX load to seed history, then SSE for live updates -->
-        <div id="runs-table-body" class="max-h-[500px] overflow-y-auto overflow-x-auto"
-             hx-get="/api/runs/history"
-             hx-trigger="load"
-             hx-target="this"
-             hx-swap="innerHTML"
-             hx-indicator="#runs-skeleton">
-            <div id="runs-skeleton" class="htmx-indicator p-6 space-y-4" aria-hidden="true">
-                {% for _ in range(4) %}
-                <div class="flex items-center gap-4">
-                    <div class="skeleton w-24 h-4"></div>
-                    <div class="skeleton w-12 h-4"></div>
-                    <div class="skeleton w-12 h-4"></div>
-                    <div class="skeleton w-20 h-5 rounded-full"></div>
-                    <div class="skeleton w-16 h-4"></div>
-                    <div class="skeleton w-16 h-4"></div>
-                    <div class="skeleton w-14 h-4"></div>
-                    <div class="skeleton w-20 h-4"></div>
-                </div>
-                {% endfor %}
-            </div>
+        <!-- Runs table: rendered server-side on every load; provider history is
+             seeded once per tab session by the JS below (cold load only) -->
+        <div id="runs-table-body" class="max-h-[500px] overflow-y-auto overflow-x-auto" aria-live="polite">
             {% if recent_runs %}
             <div class="overflow-x-auto">
             <table class="data-table">
                 <thead>
                     <tr>
                         <th scope="col">Repository</th>
-                        <th scope="col">Run ID</th>
+                        <th scope="col">Run Time (IST)</th>
                         <th scope="col">Attempt</th>
                         <th scope="col">Status</th>
                         <th scope="col">Platform</th>
@@ -326,7 +319,7 @@ endblock %} {% block content %}
                             {{ run.repository }}
                         </td>
                         <td class="font-mono text-xs ci-text-muted">
-                            #{{ run.run_id }}
+                            {{ run.run_time | default('—') }}
                         </td>
                         <td class="font-mono text-xs ci-text-muted">
                             #{{ run.run_attempt | default('1') }}
@@ -352,7 +345,21 @@ endblock %} {% block content %}
             </table>
             </div>
             {% else %}
-            <div class="p-12 text-center ci-text-muted" id="empty-state">
+            <div id="runs-skeleton" class="hidden overflow-x-auto" aria-hidden="true">
+                {% for _ in range(4) %}
+                <div class="flex items-center gap-6 px-5 py-4 ci-border-bottom">
+                    <div class="skeleton w-24 h-4"></div>
+                    <div class="skeleton w-14 h-4"></div>
+                    <div class="skeleton w-12 h-4"></div>
+                    <div class="skeleton w-20 h-5 rounded-full"></div>
+                    <div class="skeleton w-16 h-4"></div>
+                    <div class="skeleton w-16 h-4"></div>
+                    <div class="skeleton w-14 h-4"></div>
+                    <div class="skeleton w-20 h-4"></div>
+                </div>
+                {% endfor %}
+            </div>
+            <div class="p-12 text-center ci-text-muted" id="runs-empty-state">
                 <svg
                     class="w-12 h-12 mx-auto ci-text-dim mb-3"
                     fill="none"
@@ -376,7 +383,7 @@ endblock %} {% block content %}
     </div>
 </div>
 
-<script>
+<script data-page-script>
     (function () {
         var select = document.getElementById("repo-select");
         var dot = document.getElementById("repo-dot");
@@ -402,29 +409,7 @@ endblock %} {% block content %}
         select.addEventListener("change", function () {
             updateDot();
             // Reconnect SSE with new repo filter
-            es.close();
-            var repo = select.value;
-            var url =
-                "/api/events" +
-                (repo ? "?repo=" + encodeURIComponent(repo) : "");
-            es = new EventSource(url);
-            es.addEventListener("open", function () {
-                if (sseStatus) {
-                    sseStatus.textContent = "SSE: connected";
-                    sseStatus.className = "text-xs font-mono text-emerald-400";
-                }
-                if (typeof fetchWebhookHealth === "function")
-                    fetchWebhookHealth();
-                loadRepos({ silent: true });
-            });
-            es.addEventListener("error", function () {
-                if (sseStatus) {
-                    sseStatus.textContent = "SSE: disconnected";
-                    sseStatus.className = "text-xs font-mono text-rose-400";
-                }
-            });
-            es.addEventListener("ci_update", handleCiUpdate);
-            es.addEventListener("metrics_update", handleMetricsUpdate);
+            connectSse(select.value);
         });
 
         function setRepoStatus(msg, isError) {
@@ -488,7 +473,7 @@ endblock %} {% block content %}
                             false,
                         );
                         showEmptyState(true);
-                        if (!data.configured && !opts.silent) showDiscoveryPopup();
+                        if (!data.configured && !data.disable_popup && !opts.silent) showDiscoveryPopup();
                         return;
                     }
                     if (data.status === "error") {
@@ -512,7 +497,7 @@ endblock %} {% block content %}
                     } else {
                         setRepoStatus("", false);
                     }
-                    if (!data.configured && !opts.silent) showDiscoveryPopup();
+                    if (!data.configured && !data.disable_popup && !opts.silent) showDiscoveryPopup();
                 })
                 .catch(function () {
                     setRepoStatus(
@@ -523,16 +508,23 @@ endblock %} {% block content %}
                 });
         }
 
-        // First-run popup: "Use auto-discovery" marks it configured and rescans
+        // First-run popup: "Use auto-discovery" marks it configured and rescans.
+        // The "Never show this again" checkbox persists a global bypass flag.
         var discoveryAutoBtn = document.getElementById("discovery-auto");
         if (discoveryAutoBtn) {
             discoveryAutoBtn.addEventListener("click", function () {
-                fetch("/api/discovery/dismiss", { method: "POST" }).finally(
-                    function () {
-                        hideDiscoveryPopup();
-                        loadRepos({ silent: true });
-                    },
-                );
+                var neverAgain = document.getElementById("discovery-never-again");
+                var body = new URLSearchParams();
+                if (neverAgain && neverAgain.checked) {
+                    body.set("disable_auto_discovery_popup", "on");
+                }
+                fetch("/api/discovery/dismiss", {
+                    method: "POST",
+                    body: body,
+                }).finally(function () {
+                    hideDiscoveryPopup();
+                    loadRepos({ silent: true });
+                });
             });
         }
 
@@ -540,25 +532,40 @@ endblock %} {% block content %}
         loadRepos();
 
         // ------------------------------------------------------------------
-        // SSE: native EventSource — handles ci_update + metrics_update
+        // SSE: native EventSource — handles ci_update + metrics_update.
+        // The connection is published on window.__ciDashboardEs so app.js can
+        // close it before hx-boost swaps the page away (otherwise it leaks).
         // ------------------------------------------------------------------
-        var es = new EventSource("/api/events");
-
-        es.addEventListener("open", function () {
-            if (sseStatus) {
-                sseStatus.textContent = "SSE: connected";
-                sseStatus.className = "text-xs font-mono text-emerald-400";
+        function connectSse(repo) {
+            if (window.__ciDashboardEs) {
+                window.__ciDashboardEs.close();
+                window.__ciDashboardEs = null;
             }
-            if (typeof fetchWebhookHealth === "function") fetchWebhookHealth();
-            loadRepos({ silent: true });
-        });
+            var url =
+                "/api/events" +
+                (repo ? "?repo=" + encodeURIComponent(repo) : "");
+            var es = new EventSource(url);
+            window.__ciDashboardEs = es;
 
-        es.addEventListener("error", function () {
-            if (sseStatus) {
-                sseStatus.textContent = "SSE: disconnected";
-                sseStatus.className = "text-xs font-mono text-rose-400";
-            }
-        });
+            es.addEventListener("open", function () {
+                if (sseStatus) {
+                    sseStatus.textContent = "SSE: connected";
+                    sseStatus.className = "text-xs font-mono text-emerald-400";
+                }
+                if (typeof fetchWebhookHealth === "function") fetchWebhookHealth();
+                loadRepos({ silent: true });
+            });
+
+            es.addEventListener("error", function () {
+                if (sseStatus) {
+                    sseStatus.textContent = "SSE: disconnected";
+                    sseStatus.className = "text-xs font-mono text-rose-400";
+                }
+            });
+
+            es.addEventListener("ci_update", handleCiUpdate);
+            es.addEventListener("metrics_update", handleMetricsUpdate);
+        }
 
         function handleCiUpdate(e) {
             var data = JSON.parse(e.data);
@@ -576,7 +583,7 @@ endblock %} {% block content %}
                     tbody.insertAdjacentHTML("afterbegin", data.html);
                 } else {
                     container.innerHTML =
-                        '<table class="data-table"><thead><tr><th>Repository</th><th>Run ID</th><th>Attempt</th><th>Status</th><th>Platform</th><th>Branch</th><th>Commit</th><th>Author</th></tr></thead><tbody>' +
+                        '<table class="data-table"><thead><tr><th>Repository</th><th>Run Time (IST)</th><th>Attempt</th><th>Status</th><th>Platform</th><th>Branch</th><th>Commit</th><th>Author</th></tr></thead><tbody>' +
                         data.html +
                         "</tbody></table>";
                 }
@@ -596,8 +603,38 @@ endblock %} {% block content %}
             if (el) el.textContent = data.uptime;
         }
 
-        es.addEventListener("ci_update", handleCiUpdate);
-        es.addEventListener("metrics_update", handleMetricsUpdate);
+        // ------------------------------------------------------------------
+        // Cold-load history seed — fetches provider history once per tab session
+        // (gated by sessionStorage) so the skeleton only ever appears on a true
+        // cold load, never re-flashing on refresh or hx-boost navigation.
+        // ------------------------------------------------------------------
+        function seedHistoryOnce() {
+            var body = document.getElementById("runs-table-body");
+            if (!body) return;
+            if (sessionStorage.getItem("ci-history-seeded")) return;
+            sessionStorage.setItem("ci-history-seeded", "1");
+            var skeleton = document.getElementById("runs-skeleton");
+            var emptyState = document.getElementById("runs-empty-state");
+            if (skeleton) skeleton.classList.remove("hidden");
+            if (emptyState) emptyState.classList.add("hidden");
+            fetch("/api/runs/history")
+                .then(function (r) {
+                    return r.text();
+                })
+                .then(function (html) {
+                    body.innerHTML = html;
+                })
+                .catch(function () {
+                    if (skeleton) skeleton.classList.add("hidden");
+                    if (emptyState) emptyState.classList.remove("hidden");
+                });
+        }
+
+        seedHistoryOnce();
+
+        // Open the initial SSE stream (closed by app.js before any hx-boost
+        // page navigation; re-opened on each visit by this script).
+        connectSse("");
 
         // Periodic full-state refresh as fallback (every 5 min)
         setInterval(function () {

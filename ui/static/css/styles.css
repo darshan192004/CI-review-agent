@@ -263,6 +263,16 @@ h1, h2, h3, h4, h5, h6 {
   animation: pulse-ring 1.8s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
 }
 
+/* Motion-powered pulse ring. motion-init.js injects a real element because the
+   Motion DOM API cannot target pseudo-elements; the ::after keyframe version
+   above stays as the no-JS / reduced-motion fallback. */
+.status-dot-ring {
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
 @keyframes pulse-ring {
   0% { transform: scale(0.7); opacity: 0.8; }
   100% { transform: scale(1.6); opacity: 0; }
@@ -472,6 +482,16 @@ button:focus-visible {
 
 @keyframes shimmer {
   to { background-position: -200% 0; }
+}
+
+/* When the Motion foundation is active, hand these animations off to the
+   JS-driven Motion versions (which respect the reduced-motion gate). */
+.motion-ready .status-dot-pulse::after {
+  display: none;
+}
+
+.motion-ready .skeleton {
+  animation: none;
 }
 
 /* Respect reduced-motion preferences */

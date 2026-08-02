@@ -33,6 +33,7 @@ async def _init_db(db_path: Path) -> None:
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL,
                 last_webhook_at REAL DEFAULT 0,
+                session_id INTEGER,
                 UNIQUE(repository, run_id, run_attempt)
             )
             """
@@ -49,13 +50,22 @@ async def _init_db(db_path: Path) -> None:
             ON ci_runs (status)
             """
         )
-        # Migration: add last_webhook_at column if missing
+        # Migration: add missing columns (must run BEFORE the session index so
+        # the index never references a column that doesn't exist yet).
         async with db.execute("PRAGMA table_info(ci_runs)") as cursor:
             columns = [row[1] async for row in cursor]
             if "last_webhook_at" not in columns:
                 await db.execute("ALTER TABLE ci_runs ADD COLUMN last_webhook_at REAL DEFAULT 0")
             if "attempt_count" not in columns:
                 await db.execute("ALTER TABLE ci_runs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0")
+            if "session_id" not in columns:
+                await db.execute("ALTER TABLE ci_runs ADD COLUMN session_id INTEGER")
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_ci_runs_session
+            ON ci_runs (session_id)
+            """
+        )
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS ci_sessions (
@@ -100,7 +110,7 @@ class RunTracker:
         return f"{repository}:{run_id}:{run_attempt}"
 
     async def _evict_expired(self, db: aiosqlite.Connection) -> None:
-        now = time.monotonic()
+        now = time.time()
         await db.execute(
             "DELETE FROM ci_runs WHERE ? - updated_at > ?",
             (now, self._ttl),
@@ -151,30 +161,36 @@ class RunTracker:
         failure_summary: str = "",
         patch_summary: str = "",
         attempt_count: int = 0,
+        session_id: int | None = None,
+        created_at: float | None = None,
+        force_created_at: bool = False,
     ) -> None:
-        now = time.monotonic()
+        now = time.time()
+        created = created_at if created_at is not None else now
+        update_clauses = [
+            "status = excluded.status",
+            "platform = excluded.platform",
+            "branch = excluded.branch",
+            "commit_sha = excluded.commit_sha",
+            "author = excluded.author",
+            "failure_summary = excluded.failure_summary",
+            "patch_summary = excluded.patch_summary",
+            "attempt_count = excluded.attempt_count",
+            "session_id = COALESCE(excluded.session_id, ci_runs.session_id)",
+            "updated_at = excluded.updated_at",
+        ]
+        if force_created_at:
+            update_clauses.insert(0, "created_at = excluded.created_at")
         async with aiosqlite.connect(_DB_PATH) as db:
             await _init_db(_DB_PATH)
             await self._evict_expired(db)
             await db.execute(
-                """
-                INSERT INTO ci_runs (
-                    repository, run_id, run_attempt, status, platform, branch,
-                    commit_sha, author, failure_summary, patch_summary,
-                    attempt_count,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(repository, run_id, run_attempt) DO UPDATE SET
-                    status = excluded.status,
-                    platform = excluded.platform,
-                    branch = excluded.branch,
-                    commit_sha = excluded.commit_sha,
-                    author = excluded.author,
-                    failure_summary = excluded.failure_summary,
-                    patch_summary = excluded.patch_summary,
-                    attempt_count = excluded.attempt_count,
-                    updated_at = excluded.updated_at
-                """,
+                "INSERT INTO ci_runs ("
+                " repository, run_id, run_attempt, status, platform, branch,"
+                " commit_sha, author, failure_summary, patch_summary,"
+                " attempt_count, created_at, updated_at, session_id"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(repository, run_id, run_attempt) DO UPDATE SET " + ", ".join(update_clauses),
                 (
                     repository,
                     run_id,
@@ -187,8 +203,9 @@ class RunTracker:
                     failure_summary,
                     patch_summary,
                     attempt_count,
+                    created,
                     now,
-                    now,
+                    session_id,
                 ),
             )
             await db.commit()
@@ -211,15 +228,17 @@ class RunTracker:
         failure_summary: str = "",
         patch_summary: str = "",
         attempt_count: int = 0,
+        session_id: int | None = None,
     ) -> None:
-        now = time.monotonic()
+        now = time.time()
         async with aiosqlite.connect(_DB_PATH) as db:
             await _init_db(_DB_PATH)
             await db.execute(
                 """
                 UPDATE ci_runs
                 SET status = ?, branch = ?, commit_sha = ?, author = ?,
-                    failure_summary = ?, patch_summary = ?, attempt_count = ?, updated_at = ?
+                    failure_summary = ?, patch_summary = ?, attempt_count = ?, updated_at = ?,
+                    session_id = COALESCE(?, session_id)
                 WHERE repository = ? AND run_id = ? AND run_attempt = ?
                 """,
                 (
@@ -231,6 +250,7 @@ class RunTracker:
                     patch_summary,
                     attempt_count,
                     now,
+                    session_id,
                     repository,
                     run_id,
                     run_attempt,
@@ -245,7 +265,7 @@ class RunTracker:
             async with db.execute(
                 "SELECT repository, run_id, run_attempt, status, platform, branch, "
                 "commit_sha, author, failure_summary, patch_summary, attempt_count, "
-                "created_at, updated_at FROM ci_runs "
+                "created_at, updated_at, session_id FROM ci_runs "
                 "WHERE status IN ('processing', 'AGENT_WORKING', 'RUNNING', 'PENDING', 'QUEUED', 'WAITING')"
             ) as cursor:
                 rows = await cursor.fetchall()
@@ -258,10 +278,50 @@ class RunTracker:
             async with db.execute(
                 "SELECT repository, run_id, run_attempt, status, platform, branch, "
                 "commit_sha, author, failure_summary, patch_summary, attempt_count, "
-                "created_at, updated_at FROM ci_runs ORDER BY created_at ASC"
+                "created_at, updated_at, session_id FROM ci_runs "
+                "ORDER BY created_at DESC, CAST(run_id AS INTEGER) DESC"
             ) as cursor:
                 rows = await cursor.fetchall()
         return [self._row_to_dict(row) for row in rows]
+
+    async def get_run(
+        self,
+        repository: str,
+        run_id: str,
+        run_attempt: str = "1",
+    ) -> dict[str, Any] | None:
+        """Fetch a single run (used by the SSE renderer to show run time)."""
+        async with aiosqlite.connect(_DB_PATH) as db:
+            await _init_db(_DB_PATH)
+            await self._evict_expired(db)
+            async with db.execute(
+                "SELECT repository, run_id, run_attempt, status, platform, branch, "
+                "commit_sha, author, failure_summary, patch_summary, attempt_count, "
+                "created_at, updated_at, session_id FROM ci_runs "
+                "WHERE repository = ? AND run_id = ? AND run_attempt = ?",
+                (repository, run_id, run_attempt),
+            ) as cursor:
+                row = await cursor.fetchone()
+        return self._row_to_dict(row) if row else None
+
+    async def get_run_by_session(self, repository: str, session_id: int) -> dict[str, Any] | None:
+        """Fetch the lifecycle row bound to a session (used by the SSE renderer).
+
+        A session may accrue multiple ci_runs rows (the original failing run plus
+        the bot's re-run); the lifecycle row is the most recently created one.
+        """
+        async with aiosqlite.connect(_DB_PATH) as db:
+            await _init_db(_DB_PATH)
+            await self._evict_expired(db)
+            async with db.execute(
+                "SELECT repository, run_id, run_attempt, status, platform, branch, "
+                "commit_sha, author, failure_summary, patch_summary, attempt_count, "
+                "created_at, updated_at, session_id FROM ci_runs "
+                "WHERE repository = ? AND session_id = ? ORDER BY created_at DESC LIMIT 1",
+                (repository, session_id),
+            ) as cursor:
+                row = await cursor.fetchone()
+        return self._row_to_dict(row) if row else None
 
     async def count_by_status(self, repo: str = "") -> dict[str, int]:
         async with aiosqlite.connect(_DB_PATH) as db:
@@ -308,7 +368,7 @@ class RunTracker:
         (idempotent duplicate webhook delivery); returns None if a terminal
         session already exists for it (never resurrect completed sessions).
         """
-        now = time.monotonic()
+        now = time.time()
         limit = max_attempts or self._max_attempts
         async with aiosqlite.connect(_DB_PATH) as db:
             await _init_db(_DB_PATH)
@@ -393,7 +453,7 @@ class RunTracker:
         last_fix_sha: str | None = None,
         max_attempts: int | None = None,
     ) -> None:
-        now = time.monotonic()
+        now = time.time()
         sets: list[str] = []
         values: list[Any] = []
         if attempt_count is not None:
@@ -462,6 +522,7 @@ class RunTracker:
             "attempt_count": row[10],
             "created_at": row[11],
             "updated_at": row[12],
+            "session_id": row[13],
         }
 
 

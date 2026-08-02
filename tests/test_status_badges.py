@@ -20,6 +20,13 @@ def test_running_badge_pulses() -> None:
     assert "status-dot-pulse" in str(status_badge("RUNNING"))
 
 
+def test_fix_pushed_badge_is_active_blue() -> None:
+    html = str(status_badge("FIX_PUSHED"))
+    assert "badge-blue" in html
+    assert "status-dot-pulse" in html
+    assert "Fix Pushed" in html
+
+
 def test_passed_badge_is_stable_green() -> None:
     html = str(status_badge("PASSED"))
     assert "badge-green" in html
@@ -40,6 +47,13 @@ def test_failed_badge_is_stable_red() -> None:
 
 def test_failed_lowercase_maps() -> None:
     assert "Failed" in str(status_badge("failed"))
+
+
+def test_failure_variant_maps_to_failed_badge() -> None:
+    html = str(status_badge("failure"))
+    assert "badge-red" in html
+    assert "status-dot-pulse" not in html
+    assert "Failed" in html
 
 
 def test_error_badge_is_amber() -> None:

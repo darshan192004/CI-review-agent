@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 
+import pytest
 from fastapi.testclient import TestClient
 
 WEBHOOK_SECRET = "ci-agent-webhook-secret-2026"
@@ -16,7 +17,7 @@ os.environ.setdefault("ADMIN_USERNAME", "admin")
 os.environ.setdefault("ADMIN_PASSWORD", "testpass")
 
 # Reload settings to pick up the env vars
-from config import Settings, settings
+from config import settings
 
 _settings_dict = settings.model_dump()
 _settings_dict["github_webhook_secret"] = WEBHOOK_SECRET
@@ -26,7 +27,7 @@ _settings_dict["forgejo_webhook_secret"] = WEBHOOK_SECRET
 for k, v in _settings_dict.items():
     object.__setattr__(settings, k, v)
 
-from server import app
+from server import _format_uptime_hms, _resolve_stored_run, app
 
 client = TestClient(app)
 
@@ -182,3 +183,79 @@ class TestForgejoActionRunFailure:
             },
         )
         assert resp.status_code == 202
+
+
+class TestFormatUptimeHms:
+    def test_zero_seconds(self) -> None:
+        assert _format_uptime_hms(0) == "0h 0m 0s"
+
+    def test_seconds_only(self) -> None:
+        assert _format_uptime_hms(59) == "0h 0m 59s"
+
+    def test_minutes_and_seconds(self) -> None:
+        assert _format_uptime_hms(34 * 60 + 5) == "0h 34m 5s"
+
+    def test_hours_minutes_seconds(self) -> None:
+        assert _format_uptime_hms(3600 + 34 * 60 + 5) == "1h 34m 5s"
+
+    def test_ignores_fractional_seconds(self) -> None:
+        assert _format_uptime_hms(34 * 60 + 5.9) == "0h 34m 5s"
+
+    def test_clamps_negative(self) -> None:
+        assert _format_uptime_hms(-5) == "0h 0m 0s"
+
+
+class TestResolveStoredRun:
+    @pytest.mark.asyncio
+    async def test_prefers_get_run_by_session(self, monkeypatch) -> None:
+        lifecycle = {"repository": "testorg/testrepo", "run_id": "99", "run_attempt": "1", "created_at": 100.0}
+
+        async def fake_get_run_by_session(repo: str, session_id: int) -> dict | None:
+            assert repo == "testorg/testrepo"
+            assert session_id == 7
+            return lifecycle
+
+        async def fake_get_run(repo: str, run_id: str, run_attempt: str) -> dict | None:
+            raise AssertionError("get_run should not be called when session resolves")
+
+        monkeypatch.setattr("server.run_tracker.get_run_by_session", fake_get_run_by_session)
+        monkeypatch.setattr("server.run_tracker.get_run", fake_get_run)
+
+        row = await _resolve_stored_run(
+            {"repository": "testorg/testrepo", "run_id": "123", "run_attempt": "2", "session_id": 7}
+        )
+        assert row is lifecycle
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_get_run_when_session_missing(self, monkeypatch) -> None:
+        stored = {"repository": "testorg/testrepo", "run_id": "123", "run_attempt": "2", "created_at": 100.0}
+
+        async def fake_get_run(repo: str, run_id: str, run_attempt: str) -> dict | None:
+            assert repo == "testorg/testrepo"
+            assert run_id == "123"
+            assert run_attempt == "2"
+            return stored
+
+        monkeypatch.setattr("server.run_tracker.get_run_by_session", lambda *a: None)
+        monkeypatch.setattr("server.run_tracker.get_run", fake_get_run)
+
+        row = await _resolve_stored_run({"repository": "testorg/testrepo", "run_id": "123", "run_attempt": "2"})
+        assert row is stored
+
+    @pytest.mark.asyncio
+    async def test_falls_back_when_session_has_no_row(self, monkeypatch) -> None:
+        stored = {"repository": "testorg/testrepo", "run_id": "123", "run_attempt": "2", "created_at": 100.0}
+
+        async def fake_get_run_by_session(repo: str, session_id: int) -> dict | None:
+            return None
+
+        async def fake_get_run(repo: str, run_id: str, run_attempt: str) -> dict | None:
+            return stored
+
+        monkeypatch.setattr("server.run_tracker.get_run_by_session", fake_get_run_by_session)
+        monkeypatch.setattr("server.run_tracker.get_run", fake_get_run)
+
+        row = await _resolve_stored_run(
+            {"repository": "testorg/testrepo", "run_id": "123", "run_attempt": "2", "session_id": 7}
+        )
+        assert row is stored

@@ -4,15 +4,16 @@ import html as html_mod
 
 from markupsafe import Markup
 
-_ACTIVE_STATUSES = frozenset({"AGENT_WORKING", "processing", "RUNNING"})
-_PASSED_STATUSES = frozenset({"PASSED", "success"})
-_FAILED_STATUSES = frozenset({"FAILED", "failed"})
+from ui.status import FAILED_VARIANTS, PASSED_VARIANTS
+
+_ACTIVE_STATUSES = frozenset({"AGENT_WORKING", "processing", "RUNNING", "FIX_PUSHED"})
 _ERROR_STATUSES = frozenset({"error", "EXHAUSTED"})
 
 _ACTIVE_LABELS = {
     "AGENT_WORKING": "Agent Working",
     "processing": "Processing",
     "RUNNING": "Running",
+    "FIX_PUSHED": "Fix Pushed",
 }
 
 
@@ -30,9 +31,9 @@ def status_badge(status: str) -> Markup:
             '<span class="status-dot status-dot-pulse bg-blue-400"></span>'
             f"{label}</span>"
         )
-    if status in _PASSED_STATUSES:
+    if status in PASSED_VARIANTS:
         return Markup('<span class="badge badge-green"><span class="status-dot bg-emerald-400"></span>Passed</span>')
-    if status in _FAILED_STATUSES:
+    if status in FAILED_VARIANTS:
         return Markup('<span class="badge badge-red"><span class="status-dot bg-rose-400"></span>Failed</span>')
     if status in _ERROR_STATUSES:
         label = "Error" if status == "error" else "Exhausted"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import patch
 
 import pytest
 
@@ -95,6 +96,65 @@ class TestRunTracker:
         assert len(await self.tracker.get_all_runs()) == 2
 
     @pytest.mark.asyncio
+    async def test_get_all_runs_orders_newest_first(self) -> None:
+        tracker = RunTracker(ttl_seconds=10**12)
+        with patch(
+            "services.run_tracker.time.time",
+            side_effect=[1000.0, 1000.0, 2000.0, 2000.0, 3000.0, 3000.0],
+        ):
+            await tracker.record("owner/repo", "1")
+            await tracker.record("owner/repo", "2")
+            await tracker.record("owner/repo", "3")
+        runs = await tracker.get_all_runs()
+        assert [r["run_id"] for r in runs] == ["3", "2", "1"]
+
+    @pytest.mark.asyncio
+    async def test_get_all_runs_breaks_ties_by_run_id_desc(self) -> None:
+        tracker = RunTracker(ttl_seconds=10**12)
+        now = 1_700_000_000.0
+        for run_id in ("2", "3", "14"):
+            await tracker.record("owner/repo", run_id, created_at=now)
+        runs = await tracker.get_all_runs()
+        assert [r["run_id"] for r in runs] == ["14", "3", "2"]
+
+    @pytest.mark.asyncio
+    async def test_record_keeps_original_created_at_on_conflict(self) -> None:
+        tracker = RunTracker(ttl_seconds=10**12)
+        await tracker.record("owner/repo", "1", created_at=100.0)
+        await tracker.record("owner/repo", "1", created_at=200.0)
+        runs = await tracker.get_all_runs()
+        assert runs[0]["created_at"] == 100.0
+
+    @pytest.mark.asyncio
+    async def test_record_force_created_at_overwrites_on_conflict(self) -> None:
+        tracker = RunTracker(ttl_seconds=10**12)
+        await tracker.record("owner/repo", "1", created_at=100.0)
+        await tracker.record("owner/repo", "1", created_at=200.0, force_created_at=True)
+        runs = await tracker.get_all_runs()
+        assert runs[0]["created_at"] == 200.0
+
+    @pytest.mark.asyncio
+    async def test_record_stores_epoch_timestamp(self) -> None:
+        tracker = RunTracker(ttl_seconds=10**12)
+        with patch("services.run_tracker.time.time", return_value=1_700_000_000.0):
+            await tracker.record("owner/repo", "1")
+        runs = await tracker.get_all_runs()
+        assert runs[0]["created_at"] == 1_700_000_000.0
+
+    @pytest.mark.asyncio
+    async def test_get_run_returns_recorded_run(self) -> None:
+        await self.tracker.record("owner/repo", "42", run_attempt="2", status="PASSED")
+        run = await self.tracker.get_run("owner/repo", "42", "2")
+        assert run is not None
+        assert run["status"] == "PASSED"
+        assert run["run_attempt"] == "2"
+        assert run["created_at"] is not None
+
+    @pytest.mark.asyncio
+    async def test_get_run_missing_returns_none(self) -> None:
+        assert await self.tracker.get_run("owner/nope", "1") is None
+
+    @pytest.mark.asyncio
     async def test_create_session_returns_active_session(self) -> None:
         """create_session must return the created session (was returning None
         because _session_row_to_dict mis-mapped max_attempts/status columns)."""
@@ -156,6 +216,111 @@ class TestRunTracker:
         assert fresh["last_fix_sha"] == "fixsha999"
         assert fresh["previous_analysis"] == "analysis"
         assert fresh["attempt_count"] == 3
+
+    @pytest.mark.asyncio
+    async def test_record_with_created_at_passthrough(self) -> None:
+        """record() must accept an explicit created_at (CI execution timestamp)
+        instead of always stamping 'now'."""
+        await self.tracker.record("owner/repo", "1", created_at=1_600_000_000.0)
+        run = await self.tracker.get_run("owner/repo", "1")
+        assert run is not None
+        assert run["created_at"] == 1_600_000_000.0
+
+    @pytest.mark.asyncio
+    async def test_record_defaults_created_at_to_now(self) -> None:
+        tracker = RunTracker(ttl_seconds=10**12)
+        with patch("services.run_tracker.time.time", return_value=1_700_000_000.0):
+            await tracker.record("owner/repo", "1")
+        run = await tracker.get_run("owner/repo", "1")
+        assert run is not None
+        assert run["created_at"] == 1_700_000_000.0
+
+    @pytest.mark.asyncio
+    async def test_record_stores_session_id(self) -> None:
+        await self.tracker.record("owner/repo", "1", session_id=7)
+        run = await self.tracker.get_run("owner/repo", "1")
+        assert run is not None
+        assert run["session_id"] == 7
+
+    @pytest.mark.asyncio
+    async def test_record_session_id_defaults_null(self) -> None:
+        await self.tracker.record("owner/repo", "1")
+        run = await self.tracker.get_run("owner/repo", "1")
+        assert run is not None
+        assert run["session_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_update_status_binds_session_id(self) -> None:
+        """update_status() must be able to bind a row to its session (the
+        session is only created AFTER the initial record)."""
+        await self.tracker.record("owner/repo", "1", status="processing")
+        await self.tracker.update_status("owner/repo", "1", "AGENT_WORKING", session_id=9)
+        run = await self.tracker.get_run("owner/repo", "1")
+        assert run is not None
+        assert run["session_id"] == 9
+
+    @pytest.mark.asyncio
+    async def test_get_run_by_session_returns_bound_row(self) -> None:
+        await self.tracker.record("owner/repo", "1", status="FIX_PUSHED", session_id=5)
+        run = await self.tracker.get_run_by_session("owner/repo", 5)
+        assert run is not None
+        assert run["run_id"] == "1"
+        assert run["status"] == "FIX_PUSHED"
+
+    @pytest.mark.asyncio
+    async def test_get_run_by_session_missing_returns_none(self) -> None:
+        await self.tracker.record("owner/repo", "1", session_id=5)
+        assert await self.tracker.get_run_by_session("owner/repo", 999) is None
+
+    @pytest.mark.asyncio
+    async def test_get_run_by_session_latest_bound_row_wins(self) -> None:
+        """A session may accrue multiple ci_runs rows (original + bot runs);
+        the lifecycle row is the most recently created one."""
+        await self.tracker.record("owner/repo", "1", status="FIX_PUSHED", session_id=5, created_at=100.0)
+        await self.tracker.record("owner/repo", "2", status="PASSED", session_id=5, created_at=200.0)
+        run = await self.tracker.get_run_by_session("owner/repo", 5)
+        assert run is not None
+        assert run["run_id"] == "2"
+        assert run["status"] == "PASSED"
+
+    @pytest.mark.asyncio
+    async def test_init_db_adds_session_id_to_legacy_table(self, tmp_path) -> None:
+        """An existing database (created before session_id existed) must be
+        migrated in place, mirroring the last_webhook_at migration."""
+        import aiosqlite
+
+        import services.run_tracker as rt
+
+        legacy = tmp_path / "legacy.db"
+        async with aiosqlite.connect(legacy) as db:
+            await db.execute(
+                """
+                CREATE TABLE ci_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    repository TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    run_attempt TEXT NOT NULL DEFAULT '1',
+                    status TEXT NOT NULL DEFAULT 'processing',
+                    platform TEXT DEFAULT '',
+                    branch TEXT DEFAULT '',
+                    commit_sha TEXT DEFAULT '',
+                    author TEXT DEFAULT '',
+                    failure_summary TEXT DEFAULT '',
+                    patch_summary TEXT DEFAULT '',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    last_webhook_at REAL DEFAULT 0,
+                    UNIQUE(repository, run_id, run_attempt)
+                )
+                """
+            )
+            await db.commit()
+        with patch.object(rt, "_DB_PATH", legacy):
+            await rt._init_db(legacy)
+            async with aiosqlite.connect(legacy) as db, db.execute("PRAGMA table_info(ci_runs)") as cursor:
+                columns = [row[1] async for row in cursor]
+        assert "session_id" in columns
 
     @pytest.mark.asyncio
     async def test_record_with_extra_fields(self) -> None:

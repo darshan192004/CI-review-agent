@@ -28,6 +28,7 @@ from services.webhook_verify import (
 )
 from ui.app import router as ui_router
 from ui.badges import status_badge
+from ui.formatters import format_run_time
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,33 @@ def broadcast_event(task_key: str, status: str, meta: dict[str, Any]) -> None:
         )
     except asyncio.QueueFull:
         logger.warning("SSE event queue full, dropping event for %s", task_key)
+
+
+def _format_uptime_hms(seconds: float) -> str:
+    """Format an uptime duration as strict H:M:S (e.g. "0h 34m 5s")."""
+    total = max(0, int(seconds))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    return f"{hours}h {minutes}m {secs}s"
+
+
+async def _resolve_stored_run(meta: dict[str, Any]) -> dict[str, Any] | None:
+    """Resolve the ci_run row backing an SSE update.
+
+    Session-bound events are keyed to a lifecycle row via session_id, so prefer
+    ``get_run_by_session`` when available; fall back to the raw
+    (repository, run_id, run_attempt) lookup otherwise.
+    """
+    session_id = meta.get("session_id")
+    if session_id is not None:
+        row = await run_tracker.get_run_by_session(meta.get("repository", ""), session_id)
+        if row is not None:
+            return row
+    return await run_tracker.get_run(
+        meta.get("repository", ""),
+        meta.get("run_id", ""),
+        meta.get("run_attempt", "1"),
+    )
 
 
 def _check_config_warnings() -> None:
@@ -163,14 +191,9 @@ async def sse_endpoint(request: Request, repo: str = Query("")) -> StreamingResp
             counts = await run_tracker.count_by_status()
         active = counts.get("processing", 0) + counts.get("AGENT_WORKING", 0)
         success = counts.get("PASSED", 0) + counts.get("success", 0)
-        failed = counts.get("FAILED", 0) + counts.get("failed", 0) + counts.get("error", 0)
+        failed = counts.get("FAILED", 0) + counts.get("failed", 0) + counts.get("failure", 0) + counts.get("error", 0)
         uptime_seconds = time.monotonic() - _start_time if _start_time else 0
-        if uptime_seconds >= 3600:
-            uptime = f"{int(uptime_seconds // 3600)}h {int((uptime_seconds % 3600) // 60)}m"
-        elif uptime_seconds >= 60:
-            uptime = f"{int(uptime_seconds // 60)}m {int(uptime_seconds % 60)}s"
-        else:
-            uptime = f"{int(uptime_seconds)}s"
+        uptime = _format_uptime_hms(uptime_seconds)
         payload = json.dumps(
             {
                 "active": active,
@@ -193,10 +216,12 @@ async def sse_endpoint(request: Request, repo: str = Query("")) -> StreamingResp
 
             meta = event_data.get("meta", {})
             e = html_mod.escape
+            stored = await _resolve_stored_run(meta)
+            run_time = format_run_time(stored["created_at"] if stored else 0)
             html_row = (
                 f'<tr id="run-{e(event_data["task_key"])}" hx-swap-oob="outerHTML">'
                 f'<td class="font-mono text-xs text-indigo-400">{e(meta.get("repository", ""))}</td>'
-                f'<td class="font-mono text-xs text-slate-400">#{e(meta.get("run_id", ""))}</td>'
+                f'<td class="font-mono text-xs text-slate-400">{e(run_time)}</td>'
                 f'<td class="font-mono text-xs text-slate-400">#{e(meta.get("run_attempt", "1"))}</td>'
                 f"<td>{status_badge(event_data['status'])}</td>"
                 f'<td class="text-xs text-slate-400 uppercase font-mono">{e(meta.get("platform", ""))}</td>'
@@ -314,20 +339,9 @@ async def handle_forgejo_webhook(request: Request) -> Response:
     )
     dispatch_webhook_event(event)
 
-    broadcast_event(
-        task_key=f"{event.repository.full_name}:{event.run_id}:{event.run_attempt}",
-        status=event.status or "processing",
-        meta={
-            "repository": event.repository.full_name,
-            "run_id": event.run_id,
-            "run_attempt": event.run_attempt,
-            "platform": event.platform.value,
-            "branch": event.branch,
-            "commit_sha": event.commit_sha,
-            "author": event.author,
-        },
-    )
-
+    # SSE updates are emitted inside handle_webhook_event (background task) using
+    # the session-bound lifecycle row key, so bot re-runs update the trigger row
+    # instead of inserting a dangling row keyed by the bot's fresh run_id.
     return Response(status_code=202, content="Accepted")
 
 
@@ -385,18 +399,7 @@ async def handle_github_webhook(request: Request) -> Response:
     )
     dispatch_webhook_event(event)
 
-    broadcast_event(
-        task_key=f"{event.repository.full_name}:{event.run_id}:{event.run_attempt}",
-        status=event.status or "processing",
-        meta={
-            "repository": event.repository.full_name,
-            "run_id": event.run_id,
-            "run_attempt": event.run_attempt,
-            "platform": event.platform.value,
-            "branch": event.branch,
-            "commit_sha": event.commit_sha,
-            "author": event.author,
-        },
-    )
-
+    # SSE updates are emitted inside handle_webhook_event (background task) using
+    # the session-bound lifecycle row key, so bot re-runs update the trigger row
+    # instead of inserting a dangling row keyed by the bot's fresh run_id.
     return Response(status_code=202, content="Accepted")

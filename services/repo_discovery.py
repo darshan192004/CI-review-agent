@@ -7,6 +7,7 @@ from typing import Any
 from config import settings
 from services.ci_client import create_ci_client
 from services.run_tracker import run_tracker
+from services.webhook_models import parse_iso_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -112,11 +113,11 @@ def _scope_detail(platform: str, mode: str, value: str, count: int) -> str:
 
 
 async def get_known_repos() -> list[str]:
-    """Get unique repository names from webhook activity."""
+    """Get unique repository names from webhook activity (newest first)."""
     all_runs = await run_tracker.get_all_runs()
     repos: list[str] = []
     seen: set[str] = set()
-    for run in reversed(all_runs):
+    for run in all_runs:
         repo = run.get("repository", "")
         if repo and repo not in seen:
             seen.add(repo)
@@ -133,6 +134,7 @@ async def fetch_repo_run_history() -> int:
     """
     total = 0
     seen: set[str] = set()
+    seed_ts = time.time()
 
     for platform in ("forgejo", "github"):
         result = await discover_repos(platform, force=True)
@@ -155,7 +157,7 @@ async def fetch_repo_run_history() -> int:
                 finally:
                     await client.close()
 
-                for run in runs:
+                for index, run in enumerate(runs):
                     run_id = str(run.get("id", ""))
                     if not run_id:
                         continue
@@ -176,6 +178,13 @@ async def fetch_repo_run_history() -> int:
                         or run.get("triggering_actor", {}).get("login", "")
                         or run.get("actor", {}).get("login", "")
                     )
+                    created_at = parse_iso_timestamp(run.get("created_at", ""))
+                    if created_at is None:
+                        # Some providers (Forgejo's actions-runs API) omit
+                        # created_at. Anchor each run to the seed moment, newest
+                        # first, so the provider's ordering survives the
+                        # created_at DESC sort instead of inverting it.
+                        created_at = seed_ts - index
 
                     await run_tracker.record(
                         repository=repo_full_name,
@@ -186,6 +195,8 @@ async def fetch_repo_run_history() -> int:
                         branch=branch,
                         commit_sha=commit_sha,
                         author=author,
+                        created_at=created_at,
+                        force_created_at=True,
                     )
                     total += 1
             except Exception as e:  # noqa: BLE001

@@ -1,18 +1,42 @@
 from __future__ import annotations
 
 import json
-from enum import Enum
+from datetime import datetime
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 
-class CIPlatform(str, Enum):
+def parse_iso_timestamp(value: Any) -> float | None:
+    """Convert an ISO-8601 string or epoch number to a float epoch timestamp.
+
+    Handles both provider conventions: GitHub/Forgejo webhooks and API responses
+    typically emit ISO-8601 strings (e.g. ``2024-05-01T10:30:00Z``), while some
+    Gitea forks emit raw epoch integers. Returns None when unparseable so
+    callers can fall back to the webhook-arrival timestamp.
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        ts = float(value)
+        if ts > 1e12:
+            ts /= 1000.0
+        return ts
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+class CIPlatform(StrEnum):
     GITHUB = "github"
     FORGEJO = "forgejo"
 
 
-class WebhookAction(str, Enum):
+class WebhookAction(StrEnum):
     COMPLETED = "completed"
     SUCCESS = "success"
     FAILURE = "failure"
@@ -55,6 +79,11 @@ class WebhookEvent(BaseModel):
     author: str = ""
     commit_author: str = ""
     commit_author_email: str = ""
+    created_at: float | None = Field(
+        default=None,
+        description="Epoch timestamp of when the CI run actually started (parsed "
+        "from the provider payload), used for an accurate Run Time.",
+    )
 
 
 def parse_forgejo_payload(payload: dict[str, Any]) -> WebhookEvent:
@@ -69,9 +98,7 @@ def parse_forgejo_payload(payload: dict[str, Any]) -> WebhookEvent:
     branch = payload.get("ref_name", "")
     if not branch:
         ref = payload.get("ref", "")
-        branch = (
-            ref.replace("refs/heads/", "") if ref.startswith("refs/heads/") else ref
-        )
+        branch = ref.replace("refs/heads/", "") if ref.startswith("refs/heads/") else ref
 
     run_id = ""
     run_attempt = "1"
@@ -108,12 +135,8 @@ def parse_forgejo_payload(payload: dict[str, Any]) -> WebhookEvent:
         if isinstance(workflow_run, dict):
             status = workflow_run.get("status", "")
             conclusion = workflow_run.get("conclusion", "")
-    if conclusion == "success":
-        if not status:
-            status = "completed"
-    elif conclusion in ("failure", "cancelled"):
-        if not status:
-            status = "completed"
+    if conclusion in ("success", "failure", "cancelled") and not status:
+        status = "completed"
 
     # Determine author with fallbacks: sender → trigger_user → workflow_run.sender (Forgejo action_run)
     author = sender_data.get("login", "")
@@ -122,15 +145,18 @@ def parse_forgejo_payload(payload: dict[str, Any]) -> WebhookEvent:
     if not author:
         workflow_run = payload.get("workflow_run")
         if isinstance(workflow_run, dict):
-            author = (
-                workflow_run.get("trigger_user", {}).get("login", "")
-                or workflow_run.get("sender", {}).get("login", "")
+            author = workflow_run.get("trigger_user", {}).get("login", "") or workflow_run.get("sender", {}).get(
+                "login", ""
             )
             # Commit author info from workflow_run.head_commit for Forgejo action_run events
             head_commit = workflow_run.get("head_commit") or {}
             if isinstance(head_commit, dict):
-                commit_author = head_commit.get("author", {}).get("name", "") or head_commit.get("committer", {}).get("name", "")
-                commit_author_email = head_commit.get("author", {}).get("email", "") or head_commit.get("committer", {}).get("email", "")
+                commit_author = head_commit.get("author", {}).get("name", "") or head_commit.get("committer", {}).get(
+                    "name", ""
+                )
+                commit_author_email = head_commit.get("author", {}).get("email", "") or head_commit.get(
+                    "committer", {}
+                ).get("email", "")
     # If author is still missing, check action.run object (Forgejo action_run payload)
     if not author:
         action_run = payload.get("run") or {}
@@ -140,16 +166,34 @@ def parse_forgejo_payload(payload: dict[str, Any]) -> WebhookEvent:
             # Extract commit info from Forgejo action_run payload (inherently more robust for bot commits)
             head_commit = action_run.get("head_commit") or {}
             if isinstance(head_commit, dict):
-                commit_author = head_commit.get("author", {}).get("name", "") or head_commit.get("committer", {}).get("name", "")
-                commit_author_email = head_commit.get("author", {}).get("email", "") or head_commit.get("committer", {}).get("email", "")
+                commit_author = head_commit.get("author", {}).get("name", "") or head_commit.get("committer", {}).get(
+                    "name", ""
+                )
+                commit_author_email = head_commit.get("author", {}).get("email", "") or head_commit.get(
+                    "committer", {}
+                ).get("email", "")
 
     # Extract commit details from Forgejo action_run payload (which has richer commit info)
     action_run = payload.get("run") or {}
     if isinstance(action_run, dict):
         head_commit_obj = action_run.get("head_commit") or {}
         if isinstance(head_commit_obj, dict):
-            commit_author = commit_author or head_commit_obj.get("author", {}).get("name", "") or head_commit_obj.get("committer", {}).get("name", "")
-            commit_author_email = commit_author_email or head_commit_obj.get("author", {}).get("email", "") or head_commit_obj.get("committer", {}).get("email", "")
+            commit_author = (
+                commit_author
+                or head_commit_obj.get("author", {}).get("name", "")
+                or head_commit_obj.get("committer", {}).get("name", "")
+            )
+            commit_author_email = (
+                commit_author_email
+                or head_commit_obj.get("author", {}).get("email", "")
+                or head_commit_obj.get("committer", {}).get("email", "")
+            )
+
+    created_at = parse_iso_timestamp(
+        (payload.get("workflow_run") or {}).get("created_at")
+        or (payload.get("workflow") or {}).get("created_at")
+        or payload.get("created_at")
+    )
 
     return WebhookEvent(
         platform=CIPlatform.FORGEJO,
@@ -173,6 +217,7 @@ def parse_forgejo_payload(payload: dict[str, Any]) -> WebhookEvent:
         author=author,
         commit_author=commit_author,
         commit_author_email=commit_author_email,
+        created_at=created_at,
     )
 
 
@@ -217,6 +262,7 @@ def _parse_forgejo_action_payload(payload: dict[str, Any]) -> WebhookEvent:
         if isinstance(workflow_data, dict):
             commit_sha = workflow_data.get("head_sha", "")
     status = run.get("status", "") or action
+    created_at = parse_iso_timestamp(run.get("created_at") or payload.get("created_at"))
 
     commit_author, commit_author_email = _extract_commit_author_from_action_run(run)
 
@@ -242,6 +288,7 @@ def _parse_forgejo_action_payload(payload: dict[str, Any]) -> WebhookEvent:
         author=trigger_user.get("login", ""),
         commit_author=commit_author,
         commit_author_email=commit_author_email,
+        created_at=created_at,
     )
 
 
@@ -257,6 +304,7 @@ def parse_github_workflow_run(payload: dict[str, Any]) -> WebhookEvent:
     run_attempt = str(workflow_run.get("run_attempt", 1))
     status = workflow_run.get("status", "")
     conclusion = workflow_run.get("conclusion", "")
+    created_at = parse_iso_timestamp(workflow_run.get("created_at") or payload.get("created_at"))
 
     return WebhookEvent(
         platform=CIPlatform.GITHUB,
@@ -278,12 +326,11 @@ def parse_github_workflow_run(payload: dict[str, Any]) -> WebhookEvent:
         status=status,
         conclusion=conclusion,
         author=sender_data.get("login", ""),
+        created_at=created_at,
     )
 
 
-def parse_webhook_payload(
-    platform: CIPlatform, payload: dict[str, Any]
-) -> WebhookEvent:
+def parse_webhook_payload(platform: CIPlatform, payload: dict[str, Any]) -> WebhookEvent:
     if platform == CIPlatform.FORGEJO:
         return parse_forgejo_payload(payload)
     return parse_github_workflow_run(payload)

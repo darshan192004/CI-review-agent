@@ -28,7 +28,11 @@ class TelegramChannel(BaseChannel):
 
     def build_body(self, payload: AlertPayload) -> dict[str, str]:
         if not self.chat_id:
-            raise ValueError("telegram chat id not configured")
+            raise ValueError(
+                "telegram chat id not configured: send a message to your bot on Telegram, then call "
+                "https://api.telegram.org/bot<BOT_TOKEN>/getUpdates to find the numeric chat id "
+                "(it is not the bot id from the token)"
+            )
         if not _CHAT_ID_RE.fullmatch(self.chat_id):
             raise ValueError("telegram chat id must be numeric (e.g. 123456789 or -1001234567890)")
         return {

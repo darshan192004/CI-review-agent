@@ -226,6 +226,11 @@ class TestConfigPage:
         assert "forgejo_base_url" in resp.text
         assert "auto_fix_reruns" in resp.text
 
+    def test_telegram_fields_have_setup_guidance(self) -> None:
+        resp = _client.get("/config", cookies=_admin_cookie())
+        assert "@BotFather" in resp.text
+        assert "getUpdates" in resp.text
+
     def test_theme_toggle_has_aria_label(self) -> None:
         resp = _client.get("/config", cookies=_admin_cookie())
         assert 'aria-label="Toggle color theme"' in resp.text
@@ -288,15 +293,17 @@ class TestRunsPageHxFragment:
         rt._DB_PATH = original
 
     @pytest.mark.asyncio
-    async def test_hx_request_returns_fragment_not_full_page(self, _isolated_runs_db) -> None:
+    async def test_hx_request_to_page_returns_full_page_with_navbar(self, _isolated_runs_db) -> None:
+        # Boosted navigation (hx-boost on the body) sends HX-Request: true, so
+        # /runs must still return the full page or the navbar disappears.
         from services.run_tracker import run_tracker
 
         await run_tracker.record("owner/alpha", "1", status="PASSED", platform="github")
 
         resp = _client.get("/runs", headers={"HX-Request": "true"}, cookies=_admin_cookie())
         assert resp.status_code == 200
-        assert "<!DOCTYPE html>" not in resp.text
-        assert "<nav" not in resp.text
+        assert "<!DOCTYPE html>" in resp.text
+        assert "<nav" in resp.text
         assert 'id="runs-table-body"' in resp.text
 
     @pytest.mark.asyncio
@@ -311,14 +318,26 @@ class TestRunsPageHxFragment:
         assert "<nav" in resp.text
 
     @pytest.mark.asyncio
-    async def test_hx_request_filters_by_status(self, _isolated_runs_db) -> None:
+    async def test_table_partial_returns_fragment_not_full_page(self, _isolated_runs_db) -> None:
+        from services.run_tracker import run_tracker
+
+        await run_tracker.record("owner/alpha", "1", status="PASSED", platform="github")
+
+        resp = _client.get("/api/runs/table", headers={"HX-Request": "true"}, cookies=_admin_cookie())
+        assert resp.status_code == 200
+        assert "<!DOCTYPE html>" not in resp.text
+        assert "<nav" not in resp.text
+        assert 'id="runs-table-body"' in resp.text
+
+    @pytest.mark.asyncio
+    async def test_table_partial_filters_by_status(self, _isolated_runs_db) -> None:
         from services.run_tracker import run_tracker
 
         await run_tracker.record("owner/alpha", "1", status="PASSED", platform="github")
         await run_tracker.record("owner/beta", "2", status="FAILED", platform="forgejo")
 
         resp = _client.get(
-            "/runs?status=PASSED",
+            "/api/runs/table?status=PASSED",
             headers={"HX-Request": "true"},
             cookies=_admin_cookie(),
         )
@@ -328,14 +347,14 @@ class TestRunsPageHxFragment:
         assert "owner/beta" not in resp.text
 
     @pytest.mark.asyncio
-    async def test_hx_request_filters_by_platform(self, _isolated_runs_db) -> None:
+    async def test_table_partial_filters_by_platform(self, _isolated_runs_db) -> None:
         from services.run_tracker import run_tracker
 
         await run_tracker.record("owner/alpha", "1", status="PASSED", platform="github")
         await run_tracker.record("owner/beta", "2", status="FAILED", platform="forgejo")
 
         resp = _client.get(
-            "/runs?platform=forgejo",
+            "/api/runs/table?platform=forgejo",
             headers={"HX-Request": "true"},
             cookies=_admin_cookie(),
         )
@@ -350,7 +369,7 @@ class TestRunsPageHxFragment:
 
         await run_tracker.record("owner/alpha", "1", status="PASSED", platform="github")
 
-        resp = _client.get("/runs", headers={"HX-Request": "true"}, cookies=_admin_cookie())
+        resp = _client.get("/api/runs/table", headers={"HX-Request": "true"}, cookies=_admin_cookie())
         assert resp.status_code == 200
         assert 'class="overflow-x-auto scrollbar-none"' in resp.text
         assert 'scope="col"' in resp.text
@@ -366,7 +385,7 @@ class TestRunsPageHxFragment:
             failure_summary="  build failed\n  at line 5  ",
         )
 
-        resp = _client.get("/runs", headers={"HX-Request": "true"}, cookies=_admin_cookie())
+        resp = _client.get("/api/runs/table", headers={"HX-Request": "true"}, cookies=_admin_cookie())
         assert resp.status_code == 200
         assert "Run Time" in resp.text
         assert "Failure Summary" in resp.text
@@ -380,7 +399,7 @@ class TestRunsPageHxFragment:
         await run_tracker.record("owner/alpha", "1", status="PASSED", platform="github")
         await run_tracker.record("owner/beta", "2", run_attempt="3", status="PASSED", platform="github")
 
-        resp = _client.get("/runs", headers={"HX-Request": "true"}, cookies=_admin_cookie())
+        resp = _client.get("/api/runs/table", headers={"HX-Request": "true"}, cookies=_admin_cookie())
         assert resp.status_code == 200
         assert 'id="run-owner/alpha:1:1"' in resp.text
         assert 'id="run-owner/beta:2:3"' in resp.text
@@ -391,7 +410,7 @@ class TestRunsPageHxFragment:
 
         await run_tracker.record("owner/alpha", "1", status="failure")
 
-        resp = _client.get("/runs", headers={"HX-Request": "true"}, cookies=_admin_cookie())
+        resp = _client.get("/api/runs/table", headers={"HX-Request": "true"}, cookies=_admin_cookie())
         assert resp.status_code == 200
         assert "Run failed" in resp.text
 
@@ -405,7 +424,7 @@ class TestRunsPageHxFragment:
         await run_tracker.record("owner/delta", "4", status="error")
 
         resp = _client.get(
-            "/runs?status=failed",
+            "/api/runs/table?status=failed",
             headers={"HX-Request": "true"},
             cookies=_admin_cookie(),
         )

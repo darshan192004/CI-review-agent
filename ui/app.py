@@ -211,13 +211,7 @@ async def config_page(request: Request, _user: User = Depends(get_current_user))
     )
 
 
-@router.get("/runs", response_class=HTMLResponse)
-async def runs_page(
-    request: Request,
-    status: str = Query("", alias="status"),
-    platform: str = Query("", alias="platform"),
-    _user: User = Depends(get_current_user),
-) -> HTMLResponse:
+async def _filtered_runs(status: str = "", platform: str = "") -> list[dict]:
     all_runs = await run_tracker.get_all_runs()
 
     if status:
@@ -225,7 +219,7 @@ async def runs_page(
     if platform:
         all_runs = [r for r in all_runs if r.get("platform") == platform]
 
-    runs_data = [
+    return [
         {
             "repository": r["repository"],
             "run_id": r["run_id"],
@@ -242,17 +236,34 @@ async def runs_page(
         for r in all_runs
     ]
 
-    if request.headers.get("HX-Request") == "true":
-        return templates.TemplateResponse(
-            request,
-            "partials/runs_table.html",
-            {"runs": runs_data},
-        )
 
+@router.get("/runs", response_class=HTMLResponse)
+async def runs_page(
+    request: Request,
+    status: str = Query("", alias="status"),
+    platform: str = Query("", alias="platform"),
+    _user: User = Depends(get_current_user),
+) -> HTMLResponse:
+    runs_data = await _filtered_runs(status, platform)
     return templates.TemplateResponse(
         request,
         "runs.html",
         {"active_page": "runs", "runs": runs_data},
+    )
+
+
+@router.get("/api/runs/table", response_class=HTMLResponse)
+async def runs_table_partial(
+    request: Request,
+    status: str = Query("", alias="status"),
+    platform: str = Query("", alias="platform"),
+    _user: User = Depends(get_current_user),
+) -> HTMLResponse:
+    runs_data = await _filtered_runs(status, platform)
+    return templates.TemplateResponse(
+        request,
+        "partials/runs_table.html",
+        {"runs": runs_data},
     )
 
 

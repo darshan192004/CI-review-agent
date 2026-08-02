@@ -99,7 +99,7 @@ class TestChannelSend:
 
     def test_missing_telegram_chat_id_raises(self) -> None:
         channel = get_channel("telegram", bot_token=VALID_TG_TOKEN)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="getUpdates"):
             channel.build_body(_payload("telegram"))
 
     @pytest.mark.parametrize(

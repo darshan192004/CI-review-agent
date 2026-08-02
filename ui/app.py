@@ -804,10 +804,34 @@ async def test_forgejo(_user: User = Depends(require_admin_role)) -> JSONRespons
         return JSONResponse(status_code=502, content={"ok": False, "detail": str(e)})
 
 
+_MAX_ERROR_DETAIL = 200
+
+
+def _provider_error_detail(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except (ValueError, httpx.ResponseNotRead):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("description", "error", "message"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            detail = " ".join(value.split())
+            for secret in (settings.telegram_bot_token, settings.telegram_chat_id):
+                if isinstance(secret, str) and secret:
+                    detail = detail.replace(secret, "[redacted]")
+            return detail[:_MAX_ERROR_DETAIL]
+    return ""
+
+
 def _messaging_error_detail(exc: httpx.HTTPError, platform: str) -> str:
     if isinstance(exc, httpx.HTTPStatusError):
+        detail = _provider_error_detail(exc.response)
+        suffix = f": {detail}" if detail else "."
         return (
-            f"{platform} API rejected the request (HTTP {exc.response.status_code}). Check the configured credentials."
+            f"{platform} API rejected the request (HTTP {exc.response.status_code})"
+            f"{suffix} Check the configured credentials."
         )
     return f"{platform} API request failed ({type(exc).__name__}). Check the configured credentials and network access."
 

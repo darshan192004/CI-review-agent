@@ -772,6 +772,29 @@ class TestConnectionTestEndpoints:
         assert token not in data["detail"]
         assert "credentials" in data["detail"]
 
+    @patch("ui.app.settings")
+    @patch("ui.app.send_alert", new_callable=AsyncMock)
+    def test_messaging_telegram_error_includes_provider_description(
+        self, mock_send: object, mock_settings: object
+    ) -> None:
+        mock_settings.messaging_platform = "telegram"
+        request = httpx.Request("POST", "https://api.telegram.org/bot123456:abc/sendMessage")
+        response = httpx.Response(
+            403,
+            request=request,
+            json={"ok": False, "description": "Forbidden: the bot can't send messages to the bot"},
+        )
+        mock_send.side_effect = httpx.HTTPStatusError(
+            "Client error '403 Forbidden' for url 'https://api.telegram.org/...'",
+            request=request,
+            response=response,
+        )
+        resp = _client.post("/api/test/messaging", cookies=_admin_cookie())
+        assert resp.status_code == 502
+        data = resp.json()
+        assert "can't send messages" in data["detail"]
+        assert "credentials" in data["detail"]
+
     @patch("ui.app.send_alert", new_callable=AsyncMock)
     def test_messaging_success(self, mock_send: object) -> None:
         mock_send.return_value = "Alert sent via mattermost"
